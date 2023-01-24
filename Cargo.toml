@@ -1,0 +1,22 @@
+[package]
+name = "netsblox-vm-esp32c3"
+version = "0.1.0"
+authors = ["Devin Jean <emailcruzjean@yahoo.com>"]
+edition = "2021"
+
+[profile.release]
+opt-level = "s"
+
+[profile.dev]
+debug = true # Symbols are nice and they don't increase the size on Flash
+opt-level = "z"
+
+[features]
+pio = ["esp-idf-sys/pio"]
+
+[dependencies]
+esp-idf-sys = { version = "0.31.11", features = ["binstart"] }
+netsblox-vm = { git = "https://github.com/dragazo/NetsBlox-vm", default-features = false }
+
+[build-dependencies]
+embuild = "0.30.4"
