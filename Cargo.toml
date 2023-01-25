@@ -15,8 +15,10 @@ opt-level = "z"
 pio = ["esp-idf-sys/pio"]
 
 [dependencies]
-esp-idf-sys = { version = "0.31.11", features = ["binstart"] }
+esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
+esp-idf-svc = { version = "0.45.0", features = ["experimental"] }
+embedded-svc = "0.24.0"
 netsblox-vm = { git = "https://github.com/dragazo/NetsBlox-vm", default-features = false }
 
 [build-dependencies]
-embuild = "0.30.4"
+embuild = "0.31"
