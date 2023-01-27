@@ -4,6 +4,9 @@ use esp_idf_sys as _; // If using the `binstart` feature of `esp-idf-sys`, alway
 // use netsblox_vm::ast::Parser;
 
 use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection};
+use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_hal::modem::WifiModem;
+use esp_idf_svc::nvs::EspDefaultNvsPartition;
 use embedded_svc::http::Method;
 use embedded_svc::http::server::{Handler, HandlerResult};
 use embedded_svc::wifi::AuthMethod;
@@ -23,7 +26,11 @@ fn main() {
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_sys::link_patches();
 
-    let wifi = wifi::Wifi::new("nbvm-esp32c3", "password", AuthMethod::WPA2Personal).unwrap();
+    let modem = unsafe { WifiModem::new() }; // safe because we only do this once (singleton)
+    let event_loop = EspSystemEventLoop::take().unwrap();
+    let nvs = EspDefaultNvsPartition::take().unwrap();
+
+    let wifi = wifi::Wifi::new(modem, event_loop, Some(nvs), "nbvm-esp32c3", "password", AuthMethod::WPA2Personal).unwrap();
 
     let mut server = EspHttpServer::new(&Default::default()).unwrap();
     server.handler("/", Method::Get, RootHandler).unwrap();
