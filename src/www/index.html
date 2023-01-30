@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>nb-esp32c3</title>
+
+<style>
+body {
+    text-align: center;
+}
+</style>
+
+<script>
+function sendCommand(method, path, body = null) {
+    const xhr = new XMLHttpRequest();
+    xhr.onreadystatechange = () => {
+        if (xhr.readyState !== XMLHttpRequest.DONE) return;
+        alert(xhr.responseText);
+    };
+    xhr.open(method, `${location.protocol}//${location.host}${path}`);
+    xhr.send(typeof(body) === 'object' ? JSON.stringify(body) : body);
+}
+
+function wifi() {
+    const ssid = document.getElementById('wifi-ssid').value;
+    const pass = document.getElementById('wifi-pass').value;
+    sendCommand('POST', '/wifi', { ssid, pass });
+}
+function reset() {
+    sendCommand('POST', '/reset');
+}
+</script>
+
+</head>
+<body>
+
+<h1>Control Panel</h1>
+
+<h2>Wifi</h2>
+<div style="text-align: right; display: inline-block">
+    SSID: <input type="text" id="wifi-ssid"><br>
+    Password: <input type="password" id="wifi-pass"><br>
+    <button onclick="wifi()">Connect</button>
+</div>
+
+<h2>Factory Reset</h2>
+<button onclick="reset()">Reset</button>
+
+</body>
+</html>
