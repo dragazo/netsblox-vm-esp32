@@ -47,23 +47,29 @@ impl Handler<EspHttpConnection<'_>> for RootHandler {
     }
 }
 
-struct ResetHandler {
+struct WipeHandler {
     storage: Arc<Mutex<StorageController>>,
 }
-impl Handler<EspHttpConnection<'_>> for ResetHandler {
+impl Handler<EspHttpConnection<'_>> for WipeHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         {
             let mut storage = self.storage.lock().unwrap();
-            storage.clear()?;
+            storage.clear_all()?;
         }
 
         connection.initiate_response(200, None, &[])?;
+        connection.write(b"wiped all data... restart the board to apply changes...")?;
         Ok(())
     }
 }
 
 #[derive(Deserialize)]
+enum WifiKind {
+    AccessPoint, Client,
+}
+#[derive(Deserialize)]
 struct WifiConfig {
+    kind: WifiKind,
     ssid: String,
     pass: String,
 }
@@ -72,28 +78,37 @@ struct WifiConfigHandler {
 }
 impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        let WifiConfig { ssid, pass } = match parse_json_slice::<WifiConfig>(&read_all(connection)?) {
+        let WifiConfig { kind, ssid, pass } = match parse_json_slice::<WifiConfig>(&read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
                 connection.initiate_response(400, None, &[])?;
-                connection.write(b"ERROR: invalid json body")?;
+                connection.write(b"ERROR: failed to parse request body")?;
                 return Ok(());
             }
         };
-        if ssid.len() >= 32 || pass.len() >= 64 {
+
+        if !(2..32).contains(&ssid.len()) || !(8..64).contains(&pass.len()) {
             connection.initiate_response(400, None, &[])?;
-            connection.write(b"ERROR: ssid or password was too long")?;
+            connection.write(b"ERROR: ssid or password had invalid length")?;
             return Ok(());
         }
 
         {
             let mut storage = self.storage.lock().unwrap();
-            storage.wifi_ssid().set(ssid.as_bytes())?;
-            storage.wifi_pass().set(pass.as_bytes())?;
+            match kind {
+                WifiKind::AccessPoint => {
+                    storage.wifi_ap_ssid().set(ssid.as_bytes())?;
+                    storage.wifi_ap_pass().set(pass.as_bytes())?;
+                }
+                WifiKind::Client => {
+                    storage.wifi_client_ssid().set(ssid.as_bytes())?;
+                    storage.wifi_client_pass().set(pass.as_bytes())?;
+                }
+            }
         }
 
         connection.initiate_response(200, None, &[])?;
-        connection.write(b"successfully updated wifi config")?;
+        connection.write(b"successfully updated wifi config... restart the board to apply changes...")?;
         Ok(())
     }
 }
@@ -118,8 +133,8 @@ fn main() {
 
     let mut server = EspHttpServer::new(&Default::default()).unwrap();
     server.handler("/", Method::Get, RootHandler).unwrap();
+    server.handler("/wipe", Method::Post, WipeHandler { storage: storage.clone() }).unwrap();
     server.handler("/wifi", Method::Post, WifiConfigHandler { storage: storage.clone() }).unwrap();
-    server.handler("/reset", Method::Post, ResetHandler { storage: storage.clone() }).unwrap();
 
     // let ast = Parser::builder().build().unwrap().parse(include_str!("../test.xml")).unwrap();
     // println!("ast: {ast:?}");

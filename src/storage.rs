@@ -31,7 +31,7 @@ macro_rules! impl_storage_entry {
     ($($name:ident),*$(,)?) => {
         $(pub fn $name(&mut self) -> Entry { Entry { nvs: &mut self.nvs, key: stringify!($name) } })*
 
-        pub fn clear(&mut self) -> Result<(), EspError> {
+        pub fn clear_all(&mut self) -> Result<(), EspError> {
             $(self.$name().clear()?;)*
             Ok(())
         }
@@ -45,6 +45,7 @@ impl StorageController {
     pub fn new(nvs: EspDefaultNvs) -> Self { Self { nvs } }
 
     impl_storage_entry! {
-        wifi_ssid, wifi_pass,
+        wifi_ap_ssid, wifi_ap_pass,
+        wifi_client_ssid, wifi_client_pass,
     }
 }

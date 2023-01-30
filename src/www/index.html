@@ -21,13 +21,18 @@ function sendCommand(method, path, body = null) {
     xhr.send(typeof(body) === 'object' ? JSON.stringify(body) : body);
 }
 
-function wifi() {
-    const ssid = document.getElementById('wifi-ssid').value;
-    const pass = document.getElementById('wifi-pass').value;
-    sendCommand('POST', '/wifi', { ssid, pass });
+function wifiAp() {
+    const ssid = document.getElementById('wifi-ap-ssid').value;
+    const pass = document.getElementById('wifi-ap-pass').value;
+    sendCommand('POST', '/wifi', { ssid, pass, kind: 'AccessPoint' });
 }
-function reset() {
-    sendCommand('POST', '/reset');
+function wifiClient() {
+    const ssid = document.getElementById('wifi-client-ssid').value;
+    const pass = document.getElementById('wifi-client-pass').value;
+    sendCommand('POST', '/wifi', { ssid, pass, kind: 'Client' });
+}
+function wipe() {
+    sendCommand('POST', '/wipe');
 }
 </script>
 
@@ -36,15 +41,22 @@ function reset() {
 
 <h1>Control Panel</h1>
 
-<h2>Wifi</h2>
+<h2>Wifi Access Point</h2>
 <div style="text-align: right; display: inline-block">
-    SSID: <input type="text" id="wifi-ssid"><br>
-    Password: <input type="password" id="wifi-pass"><br>
-    <button onclick="wifi()">Connect</button>
+    SSID: <input type="text" id="wifi-ap-ssid"><br>
+    Password: <input type="password" id="wifi-ap-pass"><br>
+    <button onclick="wifiAp()">Connect</button>
+</div>
+
+<h2>Wifi Client</h2>
+<div style="text-align: right; display: inline-block">
+    SSID: <input type="text" id="wifi-client-ssid"><br>
+    Password: <input type="password" id="wifi-client-pass"><br>
+    <button onclick="wifiClient()">Connect</button>
 </div>
 
 <h2>Factory Reset</h2>
-<button onclick="reset()">Reset</button>
+<button onclick="wipe()">Wipe Device</button>
 
 </body>
 </html>

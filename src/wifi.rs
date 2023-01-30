@@ -29,15 +29,29 @@ impl Wifi {
         })
     }
     pub fn connect(&mut self) -> Result<(), EspError> {
-        let (ssid, pass) = {
+        let (ap_ssid, ap_pass, client_ssid, client_pass) = {
             let mut storage = self.storage.lock().unwrap();
-            (storage.wifi_ssid().get()?, storage.wifi_pass().get()?)
-        };
-        let client_config = match (ssid, pass) {
-            (Some(ssid), Some(pass)) => {
-                let ssid = String::from_utf8(ssid).unwrap();
-                let pass = String::from_utf8(pass).unwrap();
+            let f = |x| String::from_utf8(x).unwrap();
 
+            let ap_ssid = storage.wifi_ap_ssid().get()?.map(f);
+            let ap_pass = storage.wifi_ap_pass().get()?.map(f);
+
+            let client_ssid = storage.wifi_client_ssid().get()?.map(f);
+            let client_pass = storage.wifi_client_pass().get()?.map(f);
+
+            (ap_ssid, ap_pass, client_ssid, client_pass)
+        };
+
+        let ap_config = AccessPointConfiguration {
+            ssid: ap_ssid.as_deref().unwrap_or("nb-esp32c3").into(),
+            password: ap_pass.as_deref().unwrap_or("netsblox").into(),
+            channel: 1,
+            auth_method: AuthMethod::WPA2Personal,
+            ..Default::default()
+        };
+
+        let client_config = match (client_ssid, client_pass) {
+            (Some(ssid), Some(pass)) => {
                 let aps = self.wifi.scan()?;
                 let ap = aps.iter().find(|ap| ap.ssid.as_str() == ssid.as_str());
 
@@ -52,14 +66,6 @@ impl Wifi {
             (_, _) => None,
         };
         let is_client = client_config.is_some();
-
-        let ap_config = AccessPointConfiguration {
-            ssid: "nb-esp32c3".into(),
-            password: "netsblox".into(),
-            channel: 1,
-            auth_method: AuthMethod::WPA2Personal,
-            ..Default::default()
-        };
 
         self.wifi.set_configuration(&match client_config {
             Some(client_config) => Configuration::Mixed(client_config, ap_config),
@@ -79,8 +85,8 @@ impl Wifi {
                 println!("wifi client couldn't connect... wiping entry...");
 
                 let mut storage = self.storage.lock().unwrap();
-                storage.wifi_ssid().clear()?;
-                storage.wifi_pass().clear()?;
+                storage.wifi_client_ssid().clear()?;
+                storage.wifi_client_pass().clear()?;
             }
         }
 
