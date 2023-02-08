@@ -20,6 +20,7 @@ pio = ["esp-idf-sys/pio"]
 
 [dependencies]
 netsblox-vm = { git = "https://github.com/dragazo/NetsBlox-vm", default-features = false }
+gc-arena = { git = "https://github.com/kyren/gc-arena", default-features = false }
 esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
 esp-idf-svc = { version = "0.45.0", features = ["experimental"] }
 esp-idf-hal = "0.40.1"

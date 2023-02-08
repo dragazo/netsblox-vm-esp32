@@ -31,13 +31,12 @@ impl Wifi {
     pub fn connect(&mut self) -> Result<(), EspError> {
         let (ap_ssid, ap_pass, client_ssid, client_pass) = {
             let mut storage = self.storage.lock().unwrap();
-            let f = |x| String::from_utf8(x).unwrap();
 
-            let ap_ssid = storage.wifi_ap_ssid().get()?.map(f);
-            let ap_pass = storage.wifi_ap_pass().get()?.map(f);
+            let ap_ssid = storage.wifi_ap_ssid().get()?;
+            let ap_pass = storage.wifi_ap_pass().get()?;
 
-            let client_ssid = storage.wifi_client_ssid().get()?.map(f);
-            let client_pass = storage.wifi_client_pass().get()?.map(f);
+            let client_ssid = storage.wifi_client_ssid().get()?;
+            let client_pass = storage.wifi_client_pass().get()?;
 
             (ap_ssid, ap_pass, client_ssid, client_pass)
         };

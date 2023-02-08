@@ -1,24 +1,31 @@
-use std::time::Duration;
-use std::sync::{Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::thread;
+use std::collections::VecDeque;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use std::{mem, thread};
+use std::rc::Rc;
 
 use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection};
-use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
+use esp_idf_svc::eventloop::EspSystemEventLoop;
 
 use esp_idf_hal::modem::WifiModem;
 
 use esp_idf_sys::EspError;
 
-use embedded_svc::http::Method;
 use embedded_svc::http::server::{Handler, HandlerResult};
+use embedded_svc::http::Method;
 
-use serde::Deserialize;
+use serde::{Serialize, Deserialize};
 
-// use netsblox_vm::project::Project;
-// use netsblox_vm::ast::Parser;
 use netsblox_vm::json::serde_json::from_slice as parse_json_slice;
+use netsblox_vm::json::json;
+use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
+use netsblox_vm::runtime::System;
+use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
+use netsblox_vm::ast::{self, Parser};
+use netsblox_vm::project::{Input, Project};
+use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT};
 
 pub use netsblox_vm;
 
@@ -29,6 +36,38 @@ pub mod system;
 use crate::storage::*;
 use crate::wifi::*;
 use crate::system::*;
+
+#[derive(Collect)]
+#[collect(no_drop, bound = "")]
+struct Env<'gc, S: System> {
+                               proj: GcCell<'gc, Project<'gc, S>>,
+    #[collect(require_static)] locs: Locations<String>,
+}
+type EnvArena<S> = Arena<Rootable![Env<'gc, S>]>;
+
+fn get_env<S: System>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<S>, CompileError> {
+    let (bytecode, init_info, _, locations) = ByteCode::compile(role).unwrap();
+    Ok(EnvArena::new(Default::default(), |mc| {
+        let proj = Project::from_init(mc, &init_info, Rc::new(bytecode), Default::default(), system);
+        Env { proj: GcCell::allocate(mc, proj), locs: locations.transform(ToOwned::to_owned) }
+    }))
+}
+
+#[derive(Debug)]
+enum OpenProjectError {
+    ParseError { error: ast::Error },
+    NoRoles,
+    MultipleRoles,
+}
+
+fn open_project(xml: &str) -> Result<ast::Role, OpenProjectError> {
+    let ast = ast::Parser::default().parse(xml).map_err(|error| OpenProjectError::ParseError { error })?;
+    match ast.roles.as_slice() {
+        [] => Err(OpenProjectError::NoRoles),
+        [role] => Ok(ast.roles.into_iter().next().unwrap()),
+        _ => Err(OpenProjectError::MultipleRoles),
+    }
+}
 
 fn read_all(connection: &mut EspHttpConnection<'_>) -> Result<Vec<u8>, EspError> {
     let mut res = vec![];
@@ -46,6 +85,131 @@ impl Handler<EspHttpConnection<'_>> for RootHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         connection.initiate_response(200, None, &[])?;
         connection.write(include_str!("www/index.html").as_bytes())?;
+        Ok(())
+    }
+}
+
+struct ExtensionHandler {
+    wifi: Arc<Mutex<Wifi>>,
+}
+impl Handler<EspHttpConnection<'_>> for ExtensionHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let ip = match self.wifi.lock().unwrap().client_ip() {
+            Some(x) => x,
+            None => {
+                connection.initiate_response(400, None, &[])?;
+                connection.write(b"wifi client is not configured!")?;
+                return Ok(());
+            }
+        };
+
+        let extension = ExtensionArgs {
+            server: &format!("http://{}", ip),
+            syscalls: &[],
+            omitted_elements: &["thumbnail", "pentrails", "history", "replay"],
+        }.render();
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(extension.as_bytes())?;
+        Ok(())
+    }
+}
+
+struct PullStatusHandler {
+    runtime: Arc<Mutex<RuntimeContext>>,
+}
+impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let res = {
+            let mut runtime = self.runtime.lock().unwrap();
+            json!({
+                "running": runtime.running,
+                "output": mem::take(&mut runtime.output),
+                "errors": mem::take(&mut runtime.errors),
+            }).to_string()
+        };
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(res.as_bytes())?;
+        Ok(())
+    }
+}
+
+struct GetProjectHandler {
+    storage: Arc<Mutex<StorageController>>,
+}
+impl Handler<EspHttpConnection<'_>> for GetProjectHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let project = self.storage.lock().unwrap().project().get()?;
+        let project = project.as_deref().unwrap_or(EMPTY_PROJECT);
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(project.as_bytes())?;
+        Ok(())
+    }
+}
+
+struct SetProjectHandler {
+    runtime: Arc<Mutex<RuntimeContext>>,
+}
+impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let xml = match String::from_utf8(read_all(connection)?) {
+            Ok(x) => x,
+            Err(_) => {
+                connection.initiate_response(400, None, &[])?;
+                connection.write(b"failed to parse request body")?;
+                return Ok(());
+            }
+        };
+
+        self.runtime.lock().unwrap().commands.push_back(ServerCommand::SetProject(xml));
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(b"loaded project")?;
+        Ok(())
+    }
+}
+
+struct InputHandler {
+    runtime: Arc<Mutex<RuntimeContext>>,
+}
+impl Handler<EspHttpConnection<'_>> for InputHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let input = match String::from_utf8(read_all(connection)?) {
+            Ok(x) => match x.as_str() {
+                "start" => Input::Start,
+                "stop" => Input::Stop,
+                _ => {
+                    connection.initiate_response(400, None, &[])?;
+                    connection.write(b"unknown input sequence")?;
+                    return Ok(());
+                }
+            },
+            Err(_) => {
+                connection.initiate_response(400, None, &[])?;
+                connection.write(b"failed to parse request body")?;
+                return Ok(());
+            }
+        };
+
+        self.runtime.lock().unwrap().commands.push_back(ServerCommand::Input(input));
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(b"toggled pause state")?;
+        Ok(())
+    }
+}
+
+struct TogglePausedHandler {
+    runtime: Arc<Mutex<RuntimeContext>>,
+}
+impl Handler<EspHttpConnection<'_>> for TogglePausedHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        self.runtime.lock().unwrap().running ^= true;
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(b"toggled pause state")?;
         Ok(())
     }
 }
@@ -100,12 +264,12 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
             let mut storage = self.storage.lock().unwrap();
             match kind {
                 WifiKind::AccessPoint => {
-                    storage.wifi_ap_ssid().set(ssid.as_bytes())?;
-                    storage.wifi_ap_pass().set(pass.as_bytes())?;
+                    storage.wifi_ap_ssid().set(&ssid)?;
+                    storage.wifi_ap_pass().set(&pass)?;
                 }
                 WifiKind::Client => {
-                    storage.wifi_client_ssid().set(ssid.as_bytes())?;
-                    storage.wifi_client_pass().set(pass.as_bytes())?;
+                    storage.wifi_client_ssid().set(&ssid)?;
+                    storage.wifi_client_pass().set(&pass)?;
                 }
             }
         }
@@ -116,10 +280,64 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
     }
 }
 
+struct ServerHandler {
+    storage: Arc<Mutex<StorageController>>,
+}
+impl Handler<EspHttpConnection<'_>> for ServerHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let server = match String::from_utf8(read_all(connection)?) {
+            Ok(x) => x,
+            Err(_) => {
+                connection.initiate_response(400, None, &[])?;
+                connection.write(b"ERROR: failed to parse request body")?;
+                return Ok(());
+            }
+        };
+
+        self.storage.lock().unwrap().netsblox_server().set(&server)?;
+
+        connection.initiate_response(200, None, &[])?;
+        connection.write(b"successfully updated netsblox server... restart the board to apply changes...")?;
+        Ok(())
+    }
+}
+
+#[derive(Serialize)]
+struct VarEntry {
+    name: String,
+    value: String,
+}
+#[derive(Serialize)]
+struct TraceEntry {
+    location: String,
+    locals: Vec<VarEntry>,
+}
+#[derive(Serialize)]
+struct Error {
+    cause: String,
+    entity: String,
+    globals: Vec<VarEntry>,
+    fields: Vec<VarEntry>,
+    trace: Vec<TraceEntry>,
+}
+
+enum ServerCommand {
+    SetProject(String),
+    Input(Input),
+}
+
+pub struct RuntimeContext {
+    running: bool,
+    output: String,
+    errors: Vec<Error>,
+    commands: VecDeque<ServerCommand>,
+}
+
 const EXECUTOR_TAKEN: AtomicBool = AtomicBool::new(false);
 pub struct Executor {
     pub storage: Arc<Mutex<StorageController>>,
     pub wifi: Arc<Mutex<Wifi>>,
+    pub runtime: Arc<Mutex<RuntimeContext>>,
 }
 impl Executor {
     pub fn take() -> Result<Option<Self>, EspError> {
@@ -135,9 +353,16 @@ impl Executor {
 
         wifi.lock().unwrap().connect()?;
 
-        Ok(Some(Executor { storage, wifi }))
+        let runtime = Arc::new(Mutex::new(RuntimeContext {
+            running: false,
+            output: "booting...".into(),
+            errors: Default::default(),
+            commands: Default::default(),
+        }));
+
+        Ok(Some(Executor { storage, wifi, runtime }))
     }
-    pub fn run(&self) -> ! {
+    pub fn run<C: CustomTypes>(&self) -> ! {
         {
             let wifi = self.wifi.lock().unwrap();
             println!("wifi client ip: {:?}", wifi.client_ip());
@@ -145,15 +370,74 @@ impl Executor {
         }
 
         let mut server = EspHttpServer::new(&Default::default()).unwrap();
+
         server.handler("/", Method::Get, RootHandler).unwrap();
         server.handler("/wipe", Method::Post, WipeHandler { storage: self.storage.clone() }).unwrap();
         server.handler("/wifi", Method::Post, WifiConfigHandler { storage: self.storage.clone() }).unwrap();
+        server.handler("/server", Method::Post, ServerHandler { storage: self.storage.clone() }).unwrap();
 
-        // let ast = Parser::builder().build().unwrap().parse(include_str!("../test.xml")).unwrap();
-        // println!("ast: {ast:?}");
+        server.handler("/extension.js", Method::Get, ExtensionHandler { wifi: self.wifi.clone() }).unwrap();
+        server.handler("/pull", Method::Post, PullStatusHandler { runtime: self.runtime.clone() }).unwrap();
+        server.handler("/project", Method::Get, GetProjectHandler { storage: self.storage.clone() }).unwrap();
+        server.handler("/project", Method::Post, SetProjectHandler { runtime: self.runtime.clone() }).unwrap();
+        server.handler("/input", Method::Post, InputHandler { runtime: self.runtime.clone() }).unwrap();
+        server.handler("/toggle-paused", Method::Post, TogglePausedHandler { runtime: self.runtime.clone() }).unwrap();
+
+        let server = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
+        let system = Rc::new(EspSystem::<C>::new(server));
+
+        let mut running_env = {
+            let role = {
+                let xml = self.storage.lock().unwrap().project().get().unwrap();
+                let xml = xml.as_deref().unwrap_or(EMPTY_PROJECT);
+                open_project(&xml).unwrap()
+            };
+            get_env(&role, system.clone()).unwrap()
+        };
+
+        macro_rules! tee_println {
+            ($runtime:expr => $($t:tt)*) => {{
+                let msg = format!($($t)*);
+                println!("{msg}");
+                let mut runtime = $runtime;
+                runtime.output.push_str(&msg);
+                runtime.output.push('\n');
+            }}
+        }
 
         loop {
-            thread::sleep(Duration::from_secs(1));
+            // thread::sleep(Duration::from_millis(1000));
+
+            {
+                let command = self.runtime.lock().unwrap().commands.pop_front();
+                match command {
+                    Some(ServerCommand::SetProject(xml)) => match open_project(&xml) {
+                        Ok(role) => match get_env(&role, system.clone()) {
+                            Ok(env) => {
+                                running_env = env;
+                                self.storage.lock().unwrap().project().set(&xml).unwrap();
+                                tee_println!(self.runtime.lock().unwrap() => "\n>>> updated project\n");
+                            }
+                            Err(e) => {
+                                tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
+                            }
+                        }
+                        Err(e) => {
+                            tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
+                        }
+                    }
+                    Some(ServerCommand::Input(x)) => {
+                        running_env.mutate(|mc, running_env| {
+                            running_env.proj.write(mc).input(x);
+                        });
+                    }
+                    None => (),
+                }
+            }
+
+            running_env.mutate(|mc, running_env| {
+                
+            });
         }
     }
 }

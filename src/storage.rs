@@ -1,13 +1,30 @@
+use std::marker::PhantomData;
+use std::borrow::Cow;
+
+use embedded_svc::storage::RawStorage;
 use esp_idf_svc::nvs::EspDefaultNvs;
 use esp_idf_sys::EspError;
-use embedded_svc::storage::RawStorage;
 
-pub struct Entry<'a> {
+pub trait EntryType {
+    fn to_bytes(&self) -> Cow<[u8]>;
+    fn from_bytes(bytes: Vec<u8>) -> Self;
+}
+impl EntryType for String {
+    fn to_bytes(&self) -> Cow<[u8]> {
+        Cow::Borrowed(self.as_bytes())
+    }
+    fn from_bytes(bytes: Vec<u8>) -> Self {
+        String::from_utf8(bytes).unwrap()
+    }
+}
+
+pub struct Entry<'a, T: EntryType> {
     nvs: &'a mut EspDefaultNvs,
     key: &'static str,
+    _phantom: PhantomData<T>,
 }
-impl Entry<'_> {
-    pub fn get(&self) -> Result<Option<Vec<u8>>, EspError> {
+impl<T: EntryType> Entry<'_, T> {
+    pub fn get(&self) -> Result<Option<T>, EspError> {
         let len = match self.nvs.len(self.key)? {
             Some(x) => x,
             None => return Ok(None),
@@ -15,10 +32,10 @@ impl Entry<'_> {
 
         let mut res = vec![0u8; len];
         assert_eq!(self.nvs.get_raw(self.key, &mut res)?.unwrap().len(), len);
-        Ok(Some(res))
+        Ok(Some(T::from_bytes(res)))
     }
-    pub fn set(&mut self, value: &[u8]) -> Result<(), EspError> {
-        self.nvs.set_raw(self.key, value)?;
+    pub fn set(&mut self, value: &T) -> Result<(), EspError> {
+        self.nvs.set_raw(self.key, value.to_bytes().as_ref())?;
         Ok(())
     }
     pub fn clear(&mut self) -> Result<(), EspError> {
@@ -28,8 +45,8 @@ impl Entry<'_> {
 }
 
 macro_rules! impl_storage_entry {
-    ($($name:ident),*$(,)?) => {
-        $(pub fn $name(&mut self) -> Entry { Entry { nvs: &mut self.nvs, key: stringify!($name) } })*
+    ($($name:ident : $t:ty),*$(,)?) => {
+        $(pub fn $name(&mut self) -> Entry<$t> { Entry { nvs: &mut self.nvs, key: stringify!($name), _phantom: PhantomData } })*
 
         pub fn clear_all(&mut self) -> Result<(), EspError> {
             $(self.$name().clear()?;)*
@@ -45,7 +62,14 @@ impl StorageController {
     pub fn new(nvs: EspDefaultNvs) -> Self { Self { nvs } }
 
     impl_storage_entry! {
-        wifi_ap_ssid, wifi_ap_pass,
-        wifi_client_ssid, wifi_client_pass,
+        wifi_ap_ssid: String,
+        wifi_ap_pass: String,
+
+        wifi_client_ssid: String,
+        wifi_client_pass: String,
+
+        netsblox_server: String,
+
+        project: String,
     }
 }
