@@ -16,26 +16,28 @@ use esp_idf_sys::EspError;
 use embedded_svc::http::server::{Handler, HandlerResult};
 use embedded_svc::http::Method;
 
-use serde::{Serialize, Deserialize};
+use serde::Deserialize;
 
-use netsblox_vm::json::serde_json::from_slice as parse_json_slice;
-use netsblox_vm::json::json;
-use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
-use netsblox_vm::runtime::System;
+use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT, Status, Error, TraceEntry, VarEntry};
+use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
-use netsblox_vm::ast::{self, Parser};
-use netsblox_vm::project::{Input, Project};
-use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT};
+use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
+use netsblox_vm::json::serde_json;
+use netsblox_vm::runtime::System;
+use netsblox_vm::ast;
 
 pub use netsblox_vm;
 
 pub mod storage;
-pub mod wifi;
 pub mod system;
+pub mod wifi;
 
 use crate::storage::*;
-use crate::wifi::*;
 use crate::system::*;
+use crate::wifi::*;
+
+const YIELDS_BEFORE_IDLE_SLEEP: usize = 256;
+const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1ms precision (minimum value before no-op)
 
 #[derive(Collect)]
 #[collect(no_drop, bound = "")]
@@ -62,9 +64,9 @@ enum OpenProjectError {
 
 fn open_project(xml: &str) -> Result<ast::Role, OpenProjectError> {
     let ast = ast::Parser::default().parse(xml).map_err(|error| OpenProjectError::ParseError { error })?;
-    match ast.roles.as_slice() {
-        [] => Err(OpenProjectError::NoRoles),
-        [role] => Ok(ast.roles.into_iter().next().unwrap()),
+    match ast.roles.len() {
+        0 => Err(OpenProjectError::NoRoles),
+        1 => Ok(ast.roles.into_iter().next().unwrap()),
         _ => Err(OpenProjectError::MultipleRoles),
     }
 }
@@ -122,11 +124,11 @@ impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         let res = {
             let mut runtime = self.runtime.lock().unwrap();
-            json!({
-                "running": runtime.running,
-                "output": mem::take(&mut runtime.output),
-                "errors": mem::take(&mut runtime.errors),
-            }).to_string()
+            serde_json::to_string(&Status{
+                running: runtime.running,
+                output: mem::take(&mut runtime.output),
+                errors: mem::take(&mut runtime.errors),
+            }).unwrap()
         };
 
         connection.initiate_response(200, None, &[])?;
@@ -245,7 +247,7 @@ struct WifiConfigHandler {
 }
 impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        let WifiConfig { kind, ssid, pass } = match parse_json_slice::<WifiConfig>(&read_all(connection)?) {
+        let WifiConfig { kind, ssid, pass } = match serde_json::from_slice::<WifiConfig>(&read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
                 connection.initiate_response(400, None, &[])?;
@@ -302,25 +304,6 @@ impl Handler<EspHttpConnection<'_>> for ServerHandler {
     }
 }
 
-#[derive(Serialize)]
-struct VarEntry {
-    name: String,
-    value: String,
-}
-#[derive(Serialize)]
-struct TraceEntry {
-    location: String,
-    locals: Vec<VarEntry>,
-}
-#[derive(Serialize)]
-struct Error {
-    cause: String,
-    entity: String,
-    globals: Vec<VarEntry>,
-    fields: Vec<VarEntry>,
-    trace: Vec<TraceEntry>,
-}
-
 enum ServerCommand {
     SetProject(String),
     Input(Input),
@@ -354,7 +337,7 @@ impl Executor {
         wifi.lock().unwrap().connect()?;
 
         let runtime = Arc::new(Mutex::new(RuntimeContext {
-            running: false,
+            running: true,
             output: "booting...".into(),
             errors: Default::default(),
             commands: Default::default(),
@@ -394,6 +377,11 @@ impl Executor {
             };
             get_env(&role, system.clone()).unwrap()
         };
+        running_env.mutate(|mc, running_env| {
+            running_env.proj.write(mc).input(Input::Start);
+        });
+
+        let mut idle_sleeper = IdleAction::new(YIELDS_BEFORE_IDLE_SLEEP, Box::new(|| thread::sleep(IDLE_SLEEP_TIME)));
 
         macro_rules! tee_println {
             ($runtime:expr => $($t:tt)*) => {{
@@ -406,37 +394,47 @@ impl Executor {
         }
 
         loop {
-            // thread::sleep(Duration::from_millis(1000));
-
-            {
-                let command = self.runtime.lock().unwrap().commands.pop_front();
-                match command {
-                    Some(ServerCommand::SetProject(xml)) => match open_project(&xml) {
-                        Ok(role) => match get_env(&role, system.clone()) {
-                            Ok(env) => {
-                                running_env = env;
-                                self.storage.lock().unwrap().project().set(&xml).unwrap();
-                                tee_println!(self.runtime.lock().unwrap() => "\n>>> updated project\n");
-                            }
-                            Err(e) => {
-                                tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
-                            }
+            let command = self.runtime.lock().unwrap().commands.pop_front();
+            match command {
+                Some(ServerCommand::SetProject(xml)) => match open_project(&xml) {
+                    Ok(role) => match get_env(&role, system.clone()) {
+                        Ok(env) => {
+                            running_env = env;
+                            self.storage.lock().unwrap().project().set(&xml).unwrap();
+                            tee_println!(self.runtime.lock().unwrap() => "\n>>> updated project\n");
                         }
                         Err(e) => {
                             tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
                         }
                     }
-                    Some(ServerCommand::Input(x)) => {
-                        running_env.mutate(|mc, running_env| {
-                            running_env.proj.write(mc).input(x);
-                        });
+                    Err(e) => {
+                        tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
                     }
-                    None => (),
                 }
+                Some(ServerCommand::Input(x)) => {
+                    running_env.mutate(|mc, running_env| {
+                        running_env.proj.write(mc).input(x);
+                    });
+                }
+                None => (),
             }
 
+            let running = self.runtime.lock().unwrap().running;
+            if !running { continue }
+
             running_env.mutate(|mc, running_env| {
-                
+                let res = running_env.proj.write(mc).step(mc);
+                if let ProjectStep::Error { error, proc } = &res {
+                    let err = Error {
+                        cause: format!("{error:?}"),
+                        entity: proc.get_entity().read().name.clone(),
+                        globals: Default::default(),
+                        fields: Default::default(),
+                        trace: Default::default(),
+                    };
+                    self.runtime.lock().unwrap().errors.push(err);
+                }
+                idle_sleeper.consume(&res);
             });
         }
     }
