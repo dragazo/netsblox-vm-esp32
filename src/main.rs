@@ -62,5 +62,5 @@ fn main() {
     esp_idf_sys::link_patches();
 
     let exe = Arc::new(Executor::take().unwrap().unwrap());
-    exe.run::<C>();
+    exe.run::<C>(Default::default());
 }

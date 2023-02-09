@@ -24,7 +24,7 @@ use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
 use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
 use netsblox_vm::json::serde_json;
-use netsblox_vm::runtime::System;
+use netsblox_vm::runtime::{System, Config};
 use netsblox_vm::ast;
 
 pub use netsblox_vm;
@@ -32,6 +32,8 @@ pub use netsblox_vm;
 pub mod storage;
 pub mod system;
 pub mod wifi;
+pub mod http;
+mod meta;
 
 use crate::storage::*;
 use crate::system::*;
@@ -346,7 +348,7 @@ impl Executor {
 
         Ok(Some(Executor { storage, wifi, runtime }))
     }
-    pub fn run<C: CustomTypes>(&self) -> ! {
+    pub fn run<C: CustomTypes>(&self, config: Config<EspSystem<C>>) -> ! {
         {
             let wifi = self.wifi.lock().unwrap();
             println!("wifi client ip: {:?}", wifi.client_ip());
@@ -368,7 +370,7 @@ impl Executor {
         server.handler("/toggle-paused", Method::Post, TogglePausedHandler { runtime: self.runtime.clone() }).unwrap();
 
         let server = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
-        let system = Rc::new(EspSystem::<C>::new(server));
+        let system = Rc::new(EspSystem::<C>::new(server, config));
 
         let mut running_env = {
             let role = {

@@ -32,3 +32,4 @@ getrandom = { version = "0.2.8" }
 
 [build-dependencies]
 embuild = "0.31"
+names = { version = "0.14.0", default-features = false }

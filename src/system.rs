@@ -8,9 +8,11 @@ use rand::{Rng, SeedableRng};
 use rand::distributions::uniform::{SampleUniform, SampleRange};
 use rand_chacha::ChaChaRng;
 
-use netsblox_vm::runtime::{System, ErrorCause, GetType, EntityKind, Value, Entity, AsyncPoll, MaybeAsync, Request, Command};
+use netsblox_vm::runtime::{System, ErrorCause, GetType, EntityKind, Value, Entity, AsyncPoll, MaybeAsync, Request, Command, Config};
 use netsblox_vm::json::Json;
 use netsblox_vm::gc::MutationContext;
+
+use crate::http::*;
 
 pub trait IntermediateType {
     fn from_json(json: Json) -> Self;
@@ -25,9 +27,11 @@ pub trait CustomTypes: 'static + Sized {
 }
 
 struct Context {
-    server: String,
+    base_url: String,
 }
 pub struct EspSystem<C: CustomTypes> {
+    config: Config<Self>,
+    client: Arc<Mutex<HttpClient>>,
     context: Arc<Context>,
     rng: Mutex<ChaChaRng>,
     start_time: Instant,
@@ -35,14 +39,16 @@ pub struct EspSystem<C: CustomTypes> {
     _todo: PhantomData<C>,
 }
 impl<C: CustomTypes> EspSystem<C> {
-    pub fn new(server: String) -> Self {
-        let context = Arc::new(Context { server });
+    pub fn new(base_url: String, config: Config<Self>) -> Self {
+        let context = Arc::new(Context { base_url });
+
+        let client = Arc::new(Mutex::new(HttpClient::new()));
 
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");
 
         EspSystem {
-            context,
+            config, context, client,
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
             start_time: Instant::now(),
 
