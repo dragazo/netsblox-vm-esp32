@@ -18,7 +18,8 @@ use embedded_svc::http::Method;
 
 use serde::Deserialize;
 
-use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT, Status, Error, TraceEntry, VarEntry};
+use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT, Status};
+use netsblox_vm::process::ErrorSummary;
 use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
 use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
@@ -43,15 +44,15 @@ const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1
 #[collect(no_drop, bound = "")]
 struct Env<'gc, S: System> {
                                proj: GcCell<'gc, Project<'gc, S>>,
-    #[collect(require_static)] locs: Locations<String>,
+    #[collect(require_static)] locs: Locations,
 }
 type EnvArena<S> = Arena<Rootable![Env<'gc, S>]>;
 
 fn get_env<S: System>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<S>, CompileError> {
-    let (bytecode, init_info, _, locations) = ByteCode::compile(role).unwrap();
+    let (bytecode, init_info, _, locs) = ByteCode::compile(role).unwrap();
     Ok(EnvArena::new(Default::default(), |mc| {
         let proj = Project::from_init(mc, &init_info, Rc::new(bytecode), Default::default(), system);
-        Env { proj: GcCell::allocate(mc, proj), locs: locations.transform(ToOwned::to_owned) }
+        Env { proj: GcCell::allocate(mc, proj), locs }
     }))
 }
 
@@ -312,7 +313,7 @@ enum ServerCommand {
 pub struct RuntimeContext {
     running: bool,
     output: String,
-    errors: Vec<Error>,
+    errors: Vec<ErrorSummary>,
     commands: VecDeque<ServerCommand>,
 }
 
@@ -387,7 +388,7 @@ impl Executor {
             ($runtime:expr => $($t:tt)*) => {{
                 let msg = format!($($t)*);
                 println!("{msg}");
-                let mut runtime = $runtime;
+                let runtime = $runtime;
                 runtime.output.push_str(&msg);
                 runtime.output.push('\n');
             }}
@@ -401,14 +402,14 @@ impl Executor {
                         Ok(env) => {
                             running_env = env;
                             self.storage.lock().unwrap().project().set(&xml).unwrap();
-                            tee_println!(self.runtime.lock().unwrap() => "\n>>> updated project\n");
+                            tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> updated project\n");
                         }
                         Err(e) => {
-                            tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
+                            tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
                         }
                     }
                     Err(e) => {
-                        tee_println!(self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
+                        tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> failed to load project: {e:?}\n>>> keeping old project\n");
                     }
                 }
                 Some(ServerCommand::Input(x)) => {
@@ -425,14 +426,10 @@ impl Executor {
             running_env.mutate(|mc, running_env| {
                 let res = running_env.proj.write(mc).step(mc);
                 if let ProjectStep::Error { error, proc } = &res {
-                    let err = Error {
-                        cause: format!("{error:?}"),
-                        entity: proc.get_entity().read().name.clone(),
-                        globals: Default::default(),
-                        fields: Default::default(),
-                        trace: Default::default(),
-                    };
-                    self.runtime.lock().unwrap().errors.push(err);
+                    let err = ErrorSummary::extract(error, proc, &running_env.locs);
+                    let mut runtime = self.runtime.lock().unwrap();
+                    tee_println!(&mut runtime => "\n>>> error {}\n", err.cause);
+                    runtime.errors.push(err);
                 }
                 idle_sleeper.consume(&res);
             });
