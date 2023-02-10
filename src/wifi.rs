@@ -73,14 +73,14 @@ impl Wifi {
 
         self.wifi.start()?;
         let wait_for = || self.wifi.is_started().unwrap();
-        if !WifiWait::new(&self.event_loop)?.wait_with_timeout(Duration::from_secs(10), wait_for) {
+        if !WifiWait::new(&self.event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
             panic!("wifi access point couldn't start");
         }
 
         if is_client {
             self.wifi.connect()?;
             let wait_for = || self.wifi.is_connected().unwrap() && self.wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0);
-            if !EspNetifWait::new::<EspNetif>(self.wifi.sta_netif(), &self.event_loop)?.wait_with_timeout(Duration::from_secs(10), wait_for) {
+            if !EspNetifWait::new::<EspNetif>(self.wifi.sta_netif(), &self.event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
                 println!("wifi client couldn't connect...");
             }
         }
