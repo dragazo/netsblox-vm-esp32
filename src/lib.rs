@@ -362,6 +362,13 @@ impl Executor {
         server.handler("/wifi", Method::Post, WifiConfigHandler { storage: self.storage.clone() }).unwrap();
         server.handler("/server", Method::Post, ServerHandler { storage: self.storage.clone() }).unwrap();
 
+        // if we're not connected to the internet, just host the board config server and do nothing else
+        if self.wifi.lock().unwrap().client_ip().is_none() {
+            loop {
+                thread::sleep(Duration::from_secs(1));
+            }
+        }
+
         server.handler("/extension.js", Method::Get, ExtensionHandler { wifi: self.wifi.clone() }).unwrap();
         server.handler("/pull", Method::Post, PullStatusHandler { runtime: self.runtime.clone() }).unwrap();
         server.handler("/project", Method::Get, GetProjectHandler { storage: self.storage.clone() }).unwrap();
@@ -370,7 +377,7 @@ impl Executor {
         server.handler("/toggle-paused", Method::Post, TogglePausedHandler { runtime: self.runtime.clone() }).unwrap();
 
         let server = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
-        let system = Rc::new(EspSystem::<C>::new(server, config));
+        let system = Rc::new(EspSystem::<C>::new(server, Some("project"), config));
 
         let mut running_env = {
             let role = {

@@ -8,7 +8,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // generate static info about this build
     let mut f = BufWriter::new(File::create("src/meta.rs").unwrap());
-    writeln!(f, "pub const NAME: &'static str = \"esp-{}\";", names::Generator::default().next().unwrap()).unwrap();
+    writeln!(f, "pub const DEFAULT_CLIENT_ID: &'static str = \"esp-{}\";", names::Generator::default().next().unwrap()).unwrap();
 
     Ok(())
 }

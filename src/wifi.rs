@@ -81,11 +81,7 @@ impl Wifi {
             self.wifi.connect()?;
             let wait_for = || self.wifi.is_connected().unwrap() && self.wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0);
             if !EspNetifWait::new::<EspNetif>(self.wifi.sta_netif(), &self.event_loop)?.wait_with_timeout(Duration::from_secs(10), wait_for) {
-                println!("wifi client couldn't connect... wiping entry...");
-
-                let mut storage = self.storage.lock().unwrap();
-                storage.wifi_client_ssid().clear()?;
-                storage.wifi_client_pass().clear()?;
+                println!("wifi client couldn't connect...");
             }
         }
 

@@ -45,8 +45,8 @@ impl<T: EntryType> Entry<'_, T> {
 }
 
 macro_rules! impl_storage_entry {
-    ($($name:ident : $t:ty),*$(,)?) => {
-        $(pub fn $name(&mut self) -> Entry<$t> { Entry { nvs: &mut self.nvs, key: stringify!($name), _phantom: PhantomData } })*
+    ($($name:ident ($key:ident) : $t:ty),*$(,)?) => {
+        $(pub fn $name(&mut self) -> Entry<$t> { Entry { nvs: &mut self.nvs, key: stringify!($key), _phantom: PhantomData } })*
 
         pub fn clear_all(&mut self) -> Result<(), EspError> {
             $(self.$name().clear()?;)*
@@ -62,14 +62,14 @@ impl StorageController {
     pub fn new(nvs: EspDefaultNvs) -> Self { Self { nvs } }
 
     impl_storage_entry! {
-        wifi_ap_ssid: String,
-        wifi_ap_pass: String,
+        wifi_ap_ssid (wapssid): String,
+        wifi_ap_pass (wappass): String,
 
-        wifi_client_ssid: String,
-        wifi_client_pass: String,
+        wifi_client_ssid (wclssid): String,
+        wifi_client_pass (wclpass): String,
 
-        netsblox_server: String,
+        netsblox_server (nbserver): String,
 
-        project: String,
+        project (proj): String,
     }
 }

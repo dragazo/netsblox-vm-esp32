@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::marker::PhantomData;
 use std::time::Instant;
 use std::sync::Mutex;
@@ -9,8 +10,10 @@ use rand::distributions::uniform::{SampleUniform, SampleRange};
 use rand_chacha::ChaChaRng;
 
 use netsblox_vm::runtime::{System, ErrorCause, GetType, EntityKind, Value, Entity, AsyncPoll, MaybeAsync, Request, Command, Config};
-use netsblox_vm::json::Json;
+use netsblox_vm::json::{Json, json, parse_json_slice};
 use netsblox_vm::gc::MutationContext;
+
+use embedded_svc::http::Method;
 
 use crate::http::*;
 
@@ -28,6 +31,13 @@ pub trait CustomTypes: 'static + Sized {
 
 struct Context {
     base_url: String,
+    host: String,
+    client_id: String,
+    project_name: String,
+
+    project_id: String,
+    role_id: String,
+    role_name: String,
 }
 pub struct EspSystem<C: CustomTypes> {
     config: Config<Self>,
@@ -39,16 +49,48 @@ pub struct EspSystem<C: CustomTypes> {
     _todo: PhantomData<C>,
 }
 impl<C: CustomTypes> EspSystem<C> {
-    pub fn new(base_url: String, config: Config<Self>) -> Self {
-        let context = Arc::new(Context { base_url });
+    pub fn new(base_url: String, project_name: Option<&str>, config: Config<Self>) -> Self {
+        let mut context = Context {
+            host: base_url[base_url.find("://").map(|x| x + 3).unwrap_or(0)..].to_owned(),
+            base_url,
+            client_id: crate::meta::DEFAULT_CLIENT_ID.into(),
+            project_name: project_name.unwrap_or("untitled").to_owned(),
 
-        let client = Arc::new(Mutex::new(HttpClient::new()));
+            project_id: String::new(),
+            role_id: String::new(),
+            role_name: String::new(),
+        };
+        let mut client = HttpClient::new();
+
+        let (_, resp) = client.request(Method::Post, &format!("{}/api/newProject", context.base_url),
+            &[("Content-Type", "application/json")],
+            json!({
+                "clientId": context.client_id,
+                "roleName": "monad",
+            }).to_string().as_bytes()
+        ).unwrap();
+        let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp).unwrap();
+        context.project_id = meta["projectId"].as_str().unwrap().to_owned();
+        context.role_id = meta["roleId"].as_str().unwrap().to_owned();
+        context.role_name = meta["roleName"].as_str().unwrap().to_owned();
+
+        let (_, resp) = client.request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
+            &[("Content-Type", "application/json")],
+            json!({
+                "projectId": context.project_id,
+                "name": context.project_name,
+            }).to_string().as_bytes()
+        ).unwrap();
+        let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp).unwrap();
+        context.project_name = meta["name"].as_str().unwrap().to_owned();
 
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");
 
         EspSystem {
-            config, context, client,
+            config,
+            context: Arc::new(context),
+            client: Arc::new(Mutex::new(client)),
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
             start_time: Instant::now(),
 
@@ -99,6 +141,6 @@ impl<C: CustomTypes> System for EspSystem<C> {
         unimplemented!()
     }
     fn receive_message(&self) -> Option<(String, Vec<(String, Json)>, Option<Self::InternReplyKey>)> {
-        unimplemented!()
+        None
     }
 }

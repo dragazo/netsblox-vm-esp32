@@ -16,7 +16,12 @@ impl HttpClient {
         Self { client }
     }
     pub fn request(&mut self, method: Method, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Result<(u16, Vec<u8>), EspError> {
-        self.client.initiate_request(method, url, headers)?;
+        let content_len_str = format!("{}", body.len());
+        let mut aug_headers = Vec::with_capacity(headers.len() + 1);
+        aug_headers.extend_from_slice(headers);
+        aug_headers.push(("Content-Length", &content_len_str));
+
+        self.client.initiate_request(method, url, &aug_headers)?;
         self.client.write(body)?;
 
         self.client.initiate_response()?;
@@ -27,7 +32,7 @@ impl HttpClient {
         loop {
             let len = self.client.read(&mut buf)?;
             if len == 0 { break }
-            body.extend_from_slice(&buf);
+            body.extend_from_slice(&buf[..len]);
         }
 
         Ok((status, body))
