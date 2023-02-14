@@ -345,7 +345,7 @@ impl Executor {
 
         let runtime = Arc::new(Mutex::new(RuntimeContext {
             running: true,
-            output: "booting...".into(),
+            output: "\n>>> booting...\n\n".into(),
             errors: Default::default(),
             commands: Default::default(),
         }));
@@ -407,7 +407,9 @@ impl Executor {
         let config = config.fallback(&Config {
             command: Some(Rc::new(move |_, _, key, command, entity| match command {
                 Command::Print { value } => {
-                    tee_println!(&mut *runtime.lock().unwrap() => "{entity:?} > {value:?}");
+                    if let Some(value) = value {
+                        tee_println!(&mut *runtime.lock().unwrap() => "{entity:?} > {value:?}");
+                    }
                     key.complete(Ok(()));
                     CommandStatus::Handled
                 }
@@ -429,6 +431,8 @@ impl Executor {
         running_env.mutate(|mc, running_env| {
             running_env.proj.write(mc).input(Input::Start);
         });
+
+        tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> starting project\n");
 
         let mut idle_sleeper = IdleAction::new(YIELDS_BEFORE_IDLE_SLEEP, Box::new(|| thread::sleep(IDLE_SLEEP_TIME)));
 
