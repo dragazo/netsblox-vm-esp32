@@ -1,3 +1,5 @@
+#![feature(concat_bytes)]
+
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
@@ -5,9 +7,10 @@ use std::time::Duration;
 use std::{mem, thread};
 use std::rc::Rc;
 
-use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection};
+use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection, Configuration};
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
+use esp_idf_svc::tls::X509;
 
 use esp_idf_hal::modem::WifiModem;
 
@@ -24,7 +27,7 @@ use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
 use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
 use netsblox_vm::json::serde_json;
-use netsblox_vm::runtime::{System, Config};
+use netsblox_vm::runtime::{System, Config, Command, CommandStatus};
 use netsblox_vm::ast;
 
 pub use netsblox_vm;
@@ -60,13 +63,13 @@ fn get_env<S: System>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<S>, Co
 
 #[derive(Debug)]
 enum OpenProjectError {
-    ParseError { error: ast::Error },
+    ParseError(ast::Error),
     NoRoles,
     MultipleRoles,
 }
 
 fn open_project(xml: &str) -> Result<ast::Role, OpenProjectError> {
-    let ast = ast::Parser::default().parse(xml).map_err(|error| OpenProjectError::ParseError { error })?;
+    let ast = ast::Parser::default().parse(xml).map_err(OpenProjectError::ParseError)?;
     match ast.roles.len() {
         0 => Err(OpenProjectError::NoRoles),
         1 => Ok(ast.roles.into_iter().next().unwrap()),
@@ -88,7 +91,7 @@ fn read_all(connection: &mut EspHttpConnection<'_>) -> Result<Vec<u8>, EspError>
 struct RootHandler;
 impl Handler<EspHttpConnection<'_>> for RootHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(include_str!("www/index.html").as_bytes())?;
         Ok(())
     }
@@ -102,19 +105,20 @@ impl Handler<EspHttpConnection<'_>> for ExtensionHandler {
         let ip = match self.wifi.lock().unwrap().client_ip() {
             Some(x) => x,
             None => {
-                connection.initiate_response(400, None, &[])?;
+                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
                 connection.write(b"wifi client is not configured!")?;
                 return Ok(());
             }
         };
 
         let extension = ExtensionArgs {
-            server: &format!("http://{}", ip),
+            server: &format!("https://{ip}"),
             syscalls: &[],
             omitted_elements: &["thumbnail", "pentrails", "history", "replay"],
+            pull_interval: Duration::from_millis(500),
         }.render();
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*"), ("Content-Type", "application/javascript")])?;
         connection.write(extension.as_bytes())?;
         Ok(())
     }
@@ -134,7 +138,7 @@ impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
             }).unwrap()
         };
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(res.as_bytes())?;
         Ok(())
     }
@@ -148,7 +152,7 @@ impl Handler<EspHttpConnection<'_>> for GetProjectHandler {
         let project = self.storage.lock().unwrap().project().get()?;
         let project = project.as_deref().unwrap_or(EMPTY_PROJECT);
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(project.as_bytes())?;
         Ok(())
     }
@@ -162,7 +166,7 @@ impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
         let xml = match String::from_utf8(read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
-                connection.initiate_response(400, None, &[])?;
+                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
                 connection.write(b"failed to parse request body")?;
                 return Ok(());
             }
@@ -170,7 +174,7 @@ impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
 
         self.runtime.lock().unwrap().commands.push_back(ServerCommand::SetProject(xml));
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(b"loaded project")?;
         Ok(())
     }
@@ -186,13 +190,13 @@ impl Handler<EspHttpConnection<'_>> for InputHandler {
                 "start" => Input::Start,
                 "stop" => Input::Stop,
                 _ => {
-                    connection.initiate_response(400, None, &[])?;
+                    connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
                     connection.write(b"unknown input sequence")?;
                     return Ok(());
                 }
             },
             Err(_) => {
-                connection.initiate_response(400, None, &[])?;
+                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
                 connection.write(b"failed to parse request body")?;
                 return Ok(());
             }
@@ -200,7 +204,7 @@ impl Handler<EspHttpConnection<'_>> for InputHandler {
 
         self.runtime.lock().unwrap().commands.push_back(ServerCommand::Input(input));
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(b"toggled pause state")?;
         Ok(())
     }
@@ -213,7 +217,7 @@ impl Handler<EspHttpConnection<'_>> for TogglePausedHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         self.runtime.lock().unwrap().running ^= true;
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(b"toggled pause state")?;
         Ok(())
     }
@@ -229,7 +233,7 @@ impl Handler<EspHttpConnection<'_>> for WipeHandler {
             storage.clear_all()?;
         }
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(b"wiped all data... restart the board to apply changes...")?;
         Ok(())
     }
@@ -253,14 +257,14 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
         let WifiConfig { kind, ssid, pass } = match serde_json::from_slice::<WifiConfig>(&read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
-                connection.initiate_response(400, None, &[])?;
+                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
                 connection.write(b"ERROR: failed to parse request body")?;
                 return Ok(());
             }
         };
 
         if !(2..32).contains(&ssid.len()) || !(8..64).contains(&pass.len()) {
-            connection.initiate_response(400, None, &[])?;
+            connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
             connection.write(b"ERROR: ssid or password had invalid length")?;
             return Ok(());
         }
@@ -279,7 +283,7 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
             }
         }
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(b"successfully updated wifi config... restart the board to apply changes...")?;
         Ok(())
     }
@@ -293,7 +297,7 @@ impl Handler<EspHttpConnection<'_>> for ServerHandler {
         let server = match String::from_utf8(read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
-                connection.initiate_response(400, None, &[])?;
+                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
                 connection.write(b"ERROR: failed to parse request body")?;
                 return Ok(());
             }
@@ -301,7 +305,7 @@ impl Handler<EspHttpConnection<'_>> for ServerHandler {
 
         self.storage.lock().unwrap().netsblox_server().set(&server)?;
 
-        connection.initiate_response(200, None, &[])?;
+        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
         connection.write(b"successfully updated netsblox server... restart the board to apply changes...")?;
         Ok(())
     }
@@ -349,13 +353,24 @@ impl Executor {
         Ok(Some(Executor { storage, wifi, runtime }))
     }
     pub fn run<C: CustomTypes>(&self, config: Config<EspSystem<C>>) -> ! {
-        {
+        let client_ip = {
             let wifi = self.wifi.lock().unwrap();
-            println!("wifi client ip: {:?}", wifi.client_ip());
+            let client_ip = wifi.client_ip();
+            println!("wifi client ip: {:?}", client_ip);
             println!("wifi server ip: {:?}", wifi.server_ip());
-        }
+            client_ip
+        };
 
-        let mut server = EspHttpServer::new(&Default::default()).unwrap();
+        macro_rules! parse_x509 {
+            ($loc:literal) => {
+                X509::pem_until_nul(concat_bytes!(include_bytes!($loc), b"\0"))
+            }
+        }
+        let mut server = EspHttpServer::new(&Configuration {
+            server_certificate: Some(parse_x509!("../cacert.pem")),
+            private_key: Some(parse_x509!("../privkey.pem")),
+            ..Default::default()
+        }).unwrap();
 
         server.handler("/", Method::Get, RootHandler).unwrap();
         server.handler("/wipe", Method::Post, WipeHandler { storage: self.storage.clone() }).unwrap();
@@ -363,11 +378,9 @@ impl Executor {
         server.handler("/server", Method::Post, ServerHandler { storage: self.storage.clone() }).unwrap();
 
         // if we're not connected to the internet, just host the board config server and do nothing else
-        if self.wifi.lock().unwrap().client_ip().is_none() {
-            loop {
-                thread::sleep(Duration::from_secs(1));
-            }
-        }
+        let client_ip = client_ip.unwrap_or_else(|| loop {
+            thread::sleep(Duration::from_secs(1));
+        });
 
         server.handler("/extension.js", Method::Get, ExtensionHandler { wifi: self.wifi.clone() }).unwrap();
         server.handler("/pull", Method::Post, PullStatusHandler { runtime: self.runtime.clone() }).unwrap();
@@ -376,8 +389,34 @@ impl Executor {
         server.handler("/input", Method::Post, InputHandler { runtime: self.runtime.clone() }).unwrap();
         server.handler("/toggle-paused", Method::Post, TogglePausedHandler { runtime: self.runtime.clone() }).unwrap();
 
-        let server = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
-        let system = Rc::new(EspSystem::<C>::new(server, Some("project"), config));
+        let server_addr = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
+
+        println!("running: {server_addr}?extensions=[\"https://{client_ip}/extension.js\"]");
+
+        macro_rules! tee_println {
+            ($runtime:expr => $($t:tt)*) => {{
+                let msg = format!($($t)*);
+                println!("{msg}");
+                let runtime = $runtime;
+                runtime.output.push_str(&msg);
+                runtime.output.push('\n');
+            }}
+        }
+
+        let runtime = self.runtime.clone();
+        let config = config.fallback(&Config {
+            command: Some(Rc::new(move |_, _, key, command, entity| match command {
+                Command::Print { value } => {
+                    tee_println!(&mut *runtime.lock().unwrap() => "{entity:?} > {value:?}");
+                    key.complete(Ok(()));
+                    CommandStatus::Handled
+                }
+                _ => CommandStatus::UseDefault { key, command },
+            })),
+            request: None,
+        });
+
+        let system = Rc::new(EspSystem::<C>::new(server_addr, Some("project"), config));
 
         let mut running_env = {
             let role = {
@@ -392,16 +431,6 @@ impl Executor {
         });
 
         let mut idle_sleeper = IdleAction::new(YIELDS_BEFORE_IDLE_SLEEP, Box::new(|| thread::sleep(IDLE_SLEEP_TIME)));
-
-        macro_rules! tee_println {
-            ($runtime:expr => $($t:tt)*) => {{
-                let msg = format!($($t)*);
-                println!("{msg}");
-                let runtime = $runtime;
-                runtime.output.push_str(&msg);
-                runtime.output.push('\n');
-            }}
-        }
 
         loop {
             let command = self.runtime.lock().unwrap().commands.pop_front();

@@ -2,6 +2,12 @@ use esp_idf_svc::http::client::{Configuration, EspHttpConnection};
 use esp_idf_sys::EspError;
 use embedded_svc::http::Method;
 
+pub struct Response {
+    pub status: u16,
+    pub body: Vec<u8>,
+    pub content_type: Option<String>,
+}
+
 pub struct HttpClient {
     client: EspHttpConnection,
 }
@@ -15,7 +21,7 @@ impl HttpClient {
 
         Self { client }
     }
-    pub fn request(&mut self, method: Method, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Result<(u16, Vec<u8>), EspError> {
+    pub fn request(&mut self, method: Method, url: &str, headers: &[(&str, &str)], body: &[u8]) -> Result<Response, EspError> {
         let content_len_str = format!("{}", body.len());
         let mut aug_headers = Vec::with_capacity(headers.len() + 1);
         aug_headers.extend_from_slice(headers);
@@ -26,6 +32,7 @@ impl HttpClient {
 
         self.client.initiate_response()?;
         let status = self.client.status();
+        let content_type = self.client.header("Content-Type").map(ToOwned::to_owned);
 
         let mut body = vec![];
         let mut buf = [0u8; 256];
@@ -35,6 +42,6 @@ impl HttpClient {
             body.extend_from_slice(&buf[..len]);
         }
 
-        Ok((status, body))
+        Ok(Response { status, body, content_type })
     }
 }

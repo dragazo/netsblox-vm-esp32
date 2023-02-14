@@ -9,11 +9,15 @@ documentation = "https://docs.rs/netsblox-vm-esp32c3"
 description = "An implementation of netsblox-vm for the esp32c3 embedded board."
 
 [profile.release]
-opt-level = "s"
+opt-level = "z"
+codegen-units = 1
+lto = true
 
 [profile.dev]
 debug = true # Symbols are nice and they don't increase the size on Flash
 opt-level = "z"
+codegen-units = 1
+lto = true
 
 [features]
 pio = ["esp-idf-sys/pio"]

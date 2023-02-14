@@ -17,3 +17,6 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 # enable verbose logging
 #CONFIG_LOG_DEFAULT_LEVEL_VERBOSE=y
 #CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
+
+# enable https servers (client works by default)
+CONFIG_ESP_HTTPS_SERVER_ENABLE=y
