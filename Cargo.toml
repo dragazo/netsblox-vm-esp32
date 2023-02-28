@@ -1,12 +1,12 @@
 [package]
-name = "netsblox-vm-esp32c3"
+name = "netsblox-vm-esp32"
 version = "0.1.0"
 authors = ["Devin Jean <emailcruzjean@yahoo.com>"]
 edition = "2021"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/dragazo/netsblox-vm-esp32c3"
-documentation = "https://docs.rs/netsblox-vm-esp32c3"
-description = "An implementation of netsblox-vm for the esp32c3 embedded board."
+repository = "https://github.com/dragazo/netsblox-vm-esp32"
+documentation = "https://docs.rs/netsblox-vm-esp32"
+description = "An implementation of netsblox-vm for esp32 embedded boards."
 
 [profile.release]
 opt-level = "z"
@@ -19,11 +19,15 @@ opt-level = "z"
 codegen-units = 1
 lto = true
 
+# remove this when rustlang team fixes this issue - https://github.com/rust-lang/compiler-builtins/issues/347
+[profile.dev.package.compiler_builtins]
+overflow-checks = false
+
 [features]
 pio = ["esp-idf-sys/pio"]
 
 [dependencies]
-netsblox-vm = { git = "https://github.com/dragazo/NetsBlox-vm", default-features = false, features = ["serde"] }
+netsblox-vm = { git = "https://github.com/dragazo/netsblox-vm", default-features = false, features = ["serde"] }
 gc-arena = { git = "https://github.com/kyren/gc-arena", default-features = false }
 esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
 esp-idf-svc = { version = "0.45.0", features = ["experimental"] }

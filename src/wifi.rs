@@ -42,7 +42,7 @@ impl Wifi {
         };
 
         let ap_config = AccessPointConfiguration {
-            ssid: ap_ssid.as_deref().unwrap_or("nb-esp32c3").into(),
+            ssid: ap_ssid.as_deref().unwrap_or("nb-esp32").into(),
             password: ap_pass.as_deref().unwrap_or("netsblox").into(),
             channel: 1,
             auth_method: AuthMethod::WPA2Personal,

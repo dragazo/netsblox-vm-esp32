@@ -6,8 +6,8 @@ use std::rc::Rc;
 use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ErrorCause};
 use netsblox_vm::json::Json;
 
-use netsblox_vm_esp32c3::Executor;
-use netsblox_vm_esp32c3::system::{CustomTypes, IntermediateType, EspSystem};
+use netsblox_vm_esp32::Executor;
+use netsblox_vm_esp32::system::{CustomTypes, IntermediateType, EspSystem};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeType {}
