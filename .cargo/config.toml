@@ -2,8 +2,11 @@
 # Uncomment the relevant target for your chip here (ESP32, ESP32-S2, ESP32-S3 or ESP32-C3)
 #target = "xtensa-esp32-espidf"
 #target = "xtensa-esp32s2-espidf"
-#target = "xtensa-esp32s3-espidf"
-target = "riscv32imc-esp-espidf"
+target = "xtensa-esp32s3-espidf"
+# target = "riscv32imc-esp-espidf"
+
+# uncomment this line iff building for ESP-IDF versions v5.0 or later (see ESP_IDF_VERSION below)
+rustflags = "--cfg espidf_time64"
 
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"
@@ -17,7 +20,7 @@ runner = "espflash --monitor"
 
 [target.xtensa-esp32s3-espidf]
 linker = "ldproxy"
-runner = "espflash --monitor"
+runner = "espflash -s 16MB --monitor"
 #rustflags = ["--cfg", "espidf_time64"] # Extending time_t for ESP IDF 5: https://github.com/esp-rs/rust/issues/110
 
 [target.riscv32imc-esp-espidf]
@@ -30,11 +33,12 @@ rustflags = ["-C", "default-linker-libraries"]
 [unstable]
 
 build-std = ["std", "panic_abort"]
-#build-std-features = ["panic_immediate_abort"] # Required for older ESP-IDF versions without a realpath implementation
+# build-std-features = ["panic_immediate_abort"] # Required for older ESP-IDF versions without a realpath implementation
 
 [env]
 # Note: these variables are not used when using pio builder (`cargo build --features pio`)
-# Builds against ESP-IDF stable (v4.4)
-ESP_IDF_VERSION = "release/v4.4"
-# Builds against ESP-IDF master (mainline)
-#ESP_IDF_VERSION = "master"
+# v5.0 and later require uncommenting the espidf_time64 cfg flag above (see [build] options).
+# earlier versions should comment said espidf_time64 cfg setting.
+# ESP_IDF_VERSION = "release/v4.4"
+ESP_IDF_VERSION = "release/v5.0"
+# ESP_IDF_VERSION = "master"

@@ -59,7 +59,31 @@ pub struct StorageController {
     nvs: EspDefaultNvs,
 }
 impl StorageController {
-    pub fn new(nvs: EspDefaultNvs) -> Self { Self { nvs } }
+    pub fn new(mut nvs: EspDefaultNvs) -> Result<Self, EspError> {
+        const TEST_KEY: &'static str = "TEST_KEY"; // temp key to make sure nvs is configured properly and working
+        const TEST_VAL: &'static [u8] = &[6, 127, 3, 200, 0, 128, 7, 255];
+        let mut buf = [0u8; 16];
+
+        nvs.remove(TEST_KEY)?;
+
+        assert_eq!(nvs.contains(TEST_KEY)?, false);
+        assert_eq!(nvs.len(TEST_KEY)?, None);
+        assert_eq!(nvs.get_raw(TEST_KEY, &mut buf)?, None);
+
+        nvs.set_raw(TEST_KEY, TEST_VAL)?;
+
+        assert_eq!(nvs.contains(TEST_KEY)?, true);
+        assert_eq!(nvs.len(TEST_KEY)?, Some(TEST_VAL.len()));
+        assert_eq!(nvs.get_raw(TEST_KEY, &mut buf)?, Some(TEST_VAL));
+
+        nvs.remove(TEST_KEY)?;
+
+        assert_eq!(nvs.contains(TEST_KEY)?, false);
+        assert_eq!(nvs.len(TEST_KEY)?, None);
+        assert_eq!(nvs.get_raw(TEST_KEY, &mut buf)?, None);
+
+        Ok(Self { nvs })
+    }
 
     impl_storage_entry! {
         wifi_ap_ssid (wapssid): String,

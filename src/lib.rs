@@ -11,6 +11,7 @@ use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection, Configuration}
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::tls::X509;
+use esp_idf_svc::sntp::{EspSntp, SyncStatus};
 
 use esp_idf_hal::modem::WifiModem;
 
@@ -335,13 +336,26 @@ impl Executor {
             return Ok(None);
         }
 
-        let modem = unsafe { WifiModem::new() }; // safe because we only do this once (singleton)
+        let modem = unsafe { WifiModem::new() }; // safe because we only do this once (see above)
         let event_loop = EspSystemEventLoop::take()?;
         let nvs_partition = EspDefaultNvsPartition::take()?;
-        let storage = Arc::new(Mutex::new(StorageController::new(EspDefaultNvs::new(nvs_partition.clone(), "nb", true)?)));
+        let storage = Arc::new(Mutex::new(StorageController::new(EspDefaultNvs::new(nvs_partition.clone(), "nb", true)?)?));
         let wifi = Arc::new(Mutex::new(Wifi::new(modem, event_loop, nvs_partition, storage.clone())?));
 
-        wifi.lock().unwrap().connect()?;
+        let wifi_connected = {
+            let mut wifi = wifi.lock().unwrap();
+            wifi.connect()?;
+            wifi.client_ip().is_some()
+        };
+
+        if wifi_connected {
+            let sntp = EspSntp::new_default()?;
+            loop {
+                let status = sntp.get_sync_status();
+                println!("sync status: {status:?}");
+                thread::sleep(Duration::from_millis(10));
+            }
+        }
 
         let runtime = Arc::new(Mutex::new(RuntimeContext {
             running: true,

@@ -36,3 +36,11 @@ And finally, build or run the VM for your target.
 ```sh
 cargo +esp run --release --target <target>
 ```
+
+## Useful Commands
+
+Wipe all contents of flash:
+
+```sh
+esptool.py --chip <chip-type> erase_flash
+```

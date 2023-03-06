@@ -19,10 +19,6 @@ opt-level = "z"
 codegen-units = 1
 lto = true
 
-# remove this when rustlang team fixes this issue - https://github.com/rust-lang/compiler-builtins/issues/347
-[profile.dev.package.compiler_builtins]
-overflow-checks = false
-
 [features]
 pio = ["esp-idf-sys/pio"]
 
@@ -30,7 +26,8 @@ pio = ["esp-idf-sys/pio"]
 netsblox-vm = { git = "https://github.com/dragazo/netsblox-vm", default-features = false, features = ["serde"] }
 gc-arena = { git = "https://github.com/kyren/gc-arena", default-features = false }
 esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
-esp-idf-svc = { version = "0.45.0", features = ["experimental"] }
+# esp-idf-svc = { version = "0.45.0", features = ["experimental"] }
+esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc", features = ["experimental"] } # replace git version with next release when available (https://github.com/esp-rs/esp-idf-svc/pull/200)
 esp-idf-hal = "0.40.1"
 embedded-svc = "0.24.0"
 serde = { version = "1.0", features = ["derive"], default-features = false }

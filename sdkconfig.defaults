@@ -5,11 +5,6 @@ CONFIG_ESP_MAIN_TASK_STACK_SIZE=20000
 # This allows to use 1 ms granuality for thread sleeps (10 ms by default).
 CONFIG_FREERTOS_HZ=1000
 
-# disable idle watchdog for main task
-# this is because we'll just be running user code forever,
-# and we don't want a user's unyielding program to trigger the watchdog.
-CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
-
 # Workaround for https://github.com/espressif/esp-idf/issues/7631
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=n
 #CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=n
@@ -18,5 +13,27 @@ CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
 #CONFIG_LOG_DEFAULT_LEVEL_VERBOSE=y
 #CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
 
+# -----------------------------------------------------------
+
+# disable idle watchdog for main task (to avoid non-yielding user code from triggering the watchdog)
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
+
+# -----------------------------------------------------------
+
 # enable https servers (client works by default)
 CONFIG_ESP_HTTPS_SERVER_ENABLE=y
+
+# -----------------------------------------------------------
+
+# these settings together successfully enable the 8MB external RAM chip
+CONFIG_ESP32S3_SPIRAM_SUPPORT=y
+CONFIG_SPIRAM_MODE_OCT=y
+
+# -----------------------------------------------------------
+
+# these fix nvs not working on esp-idf >=v5.0 (possibly also <v5.0, haven't tested)
+CONFIG_ESPTOOLPY_OCT_FLASH=y
+CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_STR=y
+
+# this fixes nvs not working on eps-idf <v5.0 (but may disable external flash all together)
+#CONFIG_SPI_FLASH_USE_LEGACY_IMPL=y

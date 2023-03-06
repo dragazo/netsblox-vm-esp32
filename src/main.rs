@@ -62,5 +62,8 @@ fn main() {
     esp_idf_sys::link_patches();
 
     let exe = Arc::new(Executor::take().unwrap().unwrap());
-    exe.run::<C>(Default::default());
+
+    println!("\nloaded... system time: {:?}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH));
+
+    // exe.run::<C>(Default::default());
 }
