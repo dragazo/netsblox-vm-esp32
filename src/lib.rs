@@ -28,7 +28,7 @@ use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
 use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
 use netsblox_vm::json::serde_json;
-use netsblox_vm::runtime::{System, Config, Command, CommandStatus};
+use netsblox_vm::runtime::{System, Config, Command, CommandStatus, CustomTypes, Key};
 use netsblox_vm::ast;
 
 pub use netsblox_vm;
@@ -48,13 +48,13 @@ const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1
 
 #[derive(Collect)]
 #[collect(no_drop, bound = "")]
-struct Env<'gc, S: System> {
-                               proj: GcCell<'gc, Project<'gc, S>>,
+struct Env<'gc, C: CustomTypes<S>, S: System<C>> {
+                               proj: GcCell<'gc, Project<'gc, C, S>>,
     #[collect(require_static)] locs: Locations,
 }
-type EnvArena<S> = Arena<Rootable![Env<'gc, S>]>;
+type EnvArena<C, S> = Arena<Rootable![Env<'gc, C, S>]>;
 
-fn get_env<S: System>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<S>, CompileError> {
+fn get_env<C: CustomTypes<S>, S: System<C>>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<C, S>, CompileError> {
     let (bytecode, init_info, _, locs) = ByteCode::compile(role).unwrap();
     Ok(EnvArena::new(Default::default(), |mc| {
         let proj = Project::from_init(mc, &init_info, Rc::new(bytecode), Default::default(), system);
@@ -342,11 +342,17 @@ impl Executor {
         let storage = Arc::new(Mutex::new(StorageController::new(EspDefaultNvs::new(nvs_partition.clone(), "nb", true)?)?));
         let wifi = Arc::new(Mutex::new(Wifi::new(modem, event_loop, nvs_partition, storage.clone())?));
 
+        println!("here 1");
+
         let wifi_connected = {
             let mut wifi = wifi.lock().unwrap();
+            println!("here 1.1");
             wifi.connect()?;
+            println!("here 1.2");
             wifi.client_ip().is_some()
         };
+
+        println!("here 2");
 
         if wifi_connected {
             let sntp = EspSntp::new_default()?;
@@ -366,7 +372,7 @@ impl Executor {
 
         Ok(Some(Executor { storage, wifi, runtime }))
     }
-    pub fn run<C: CustomTypes>(&self, config: Config<EspSystem<C>>) -> ! {
+    pub fn run<C: CustomTypes<EspSystem<C>>>(&self, config: Config<C, EspSystem<C>>) -> ! {
         let client_ip = {
             let wifi = self.wifi.lock().unwrap();
             let client_ip = wifi.client_ip();
@@ -420,7 +426,7 @@ impl Executor {
         let runtime = self.runtime.clone();
         let config = config.fallback(&Config {
             command: Some(Rc::new(move |_, _, key, command, entity| match command {
-                Command::Print { value } => {
+                Command::Print { style: _, value } => {
                     if let Some(value) = value {
                         tee_println!(&mut *runtime.lock().unwrap() => "{entity:?} > {value:?}");
                     }

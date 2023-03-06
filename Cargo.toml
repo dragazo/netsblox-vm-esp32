@@ -19,6 +19,10 @@ opt-level = "z"
 codegen-units = 1
 lto = true
 
+# remove this when rustlang team fixes this issue - https://github.com/rust-lang/compiler-builtins/issues/347
+[profile.dev.package.compiler_builtins]
+overflow-checks = false
+
 [features]
 pio = ["esp-idf-sys/pio"]
 

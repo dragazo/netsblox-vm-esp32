@@ -5,9 +5,10 @@ use std::rc::Rc;
 
 use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ErrorCause};
 use netsblox_vm::json::Json;
+use netsblox_vm::runtime::{CustomTypes, IntermediateType};
 
 use netsblox_vm_esp32::Executor;
-use netsblox_vm_esp32::system::{CustomTypes, IntermediateType, EspSystem};
+use netsblox_vm_esp32::system::EspSystem;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum NativeType {}
@@ -23,8 +24,8 @@ impl GetType for NativeValue {
 }
 
 struct EntityState;
-impl<S: System> From<EntityKind<'_, '_, S>> for EntityState {
-    fn from(_: EntityKind<'_, '_, S>) -> Self {
+impl<C: CustomTypes<S>, S: System<C>> From<EntityKind<'_, '_, C, S>> for EntityState {
+    fn from(_: EntityKind<'_, '_, C, S>) -> Self {
         EntityState
     }
 }
@@ -43,12 +44,12 @@ impl IntermediateType for Intermediate {
 }
 
 struct C;
-impl CustomTypes for C {
+impl CustomTypes<EspSystem<Self>> for C {
     type NativeValue = NativeValue;
     type EntityState = EntityState;
     type Intermediate = Intermediate;
 
-    fn from_intermediate<'gc>(mc: gc_arena::MutationContext<'gc, '_>, value: Self::Intermediate) -> Result<Value<'gc, EspSystem<Self>>, ErrorCause<EspSystem<Self>>> {
+    fn from_intermediate<'gc>(mc: gc_arena::MutationContext<'gc, '_>, value: Self::Intermediate) -> Result<Value<'gc, Self, EspSystem<Self>>, ErrorCause<Self, EspSystem<Self>>> {
         Ok(match value {
             Intermediate::Json(x) => Value::from_json(mc, x)?,
             Intermediate::Image(x) => Value::Image(Rc::new(x)),
@@ -63,7 +64,7 @@ fn main() {
 
     let exe = Arc::new(Executor::take().unwrap().unwrap());
 
-    println!("\nloaded... system time: {:?}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH));
+    println!("\nloaded... system time: {}\n", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis());
 
-    // exe.run::<C>(Default::default());
+    exe.run::<C>(Default::default());
 }
