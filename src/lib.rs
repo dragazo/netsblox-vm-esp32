@@ -11,7 +11,7 @@ use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection, Configuration}
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
 use esp_idf_svc::eventloop::EspSystemEventLoop;
 use esp_idf_svc::tls::X509;
-use esp_idf_svc::sntp::{EspSntp, SyncStatus};
+use esp_idf_svc::sntp::{EspSntp, SyncStatus, SyncMode, SntpConf};
 
 use esp_idf_hal::modem::WifiModem;
 
@@ -342,24 +342,17 @@ impl Executor {
         let storage = Arc::new(Mutex::new(StorageController::new(EspDefaultNvs::new(nvs_partition.clone(), "nb", true)?)?));
         let wifi = Arc::new(Mutex::new(Wifi::new(modem, event_loop, nvs_partition, storage.clone())?));
 
-        println!("here 1");
-
         let wifi_connected = {
             let mut wifi = wifi.lock().unwrap();
-            println!("here 1.1");
             wifi.connect()?;
-            println!("here 1.2");
             wifi.client_ip().is_some()
         };
 
-        println!("here 2");
-
         if wifi_connected {
-            let sntp = EspSntp::new_default()?;
-            loop {
-                let status = sntp.get_sync_status();
-                println!("sync status: {status:?}");
-                thread::sleep(Duration::from_millis(10));
+            // run sntp with immediate correction for one iteration just to get real world time (otherwise we can only measure uptime)
+            let sntp = EspSntp::new(&SntpConf { sync_mode: SyncMode::Immediate, ..Default::default() })?;
+            while sntp.get_sync_status() != SyncStatus::Completed {
+                thread::sleep(Duration::from_millis(50));
             }
         }
 

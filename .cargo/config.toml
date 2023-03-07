@@ -6,7 +6,7 @@ target = "xtensa-esp32s3-espidf"
 # target = "riscv32imc-esp-espidf"
 
 # uncomment this line iff building for ESP-IDF versions v5.0 or later (see ESP_IDF_VERSION below)
-rustflags = "--cfg espidf_time64"
+# rustflags = "--cfg espidf_time64"
 
 [target.xtensa-esp32-espidf]
 linker = "ldproxy"
@@ -39,6 +39,6 @@ build-std = ["std", "panic_abort"]
 # Note: these variables are not used when using pio builder (`cargo build --features pio`)
 # v5.0 and later require uncommenting the espidf_time64 cfg flag above (see [build] options).
 # earlier versions should comment said espidf_time64 cfg setting.
-# ESP_IDF_VERSION = "release/v4.4"
-ESP_IDF_VERSION = "release/v5.0"
+ESP_IDF_VERSION = "release/v4.4"
+# ESP_IDF_VERSION = "release/v5.0"
 # ESP_IDF_VERSION = "master"

@@ -29,14 +29,6 @@ impl Wifi {
         })
     }
     pub fn connect(&mut self) -> Result<(), EspError> {
-        fn wait_till_started(wifi: &EspWifi<'static>, event_loop: &EspSystemEventLoop) -> Result<(), EspError> {
-            let wait_for = || wifi.is_started().unwrap();
-            if !WifiWait::new(&event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
-                panic!("wifi access point couldn't start");
-            }
-            Ok(())
-        }
-
         let (ap_ssid, ap_pass, client_ssid, client_pass) = {
             let mut storage = self.storage.lock().unwrap();
 
@@ -49,8 +41,6 @@ impl Wifi {
             (ap_ssid, ap_pass, client_ssid, client_pass)
         };
 
-        println!("in connect");
-
         let ap_config = AccessPointConfiguration {
             ssid: ap_ssid.as_deref().unwrap_or("nb-esp32").into(),
             password: ap_pass.as_deref().unwrap_or("netsblox").into(),
@@ -59,15 +49,9 @@ impl Wifi {
             ..Default::default()
         };
 
-        // self.wifi.set_configuration(&Configuration::AccessPoint(ap_config.clone()))?;
-        // self.wifi.start()?;
-        // wait_till_started(&self.wifi, &self.event_loop)?;
-
         let client_config = match (client_ssid, client_pass) {
             (Some(ssid), Some(pass)) => {
-                println!("before wifi scan");
                 let aps = self.wifi.driver_mut().scan()?;
-                println!("after wifi scan");
                 let ap = aps.iter().find(|ap| ap.ssid.as_str() == ssid.as_str());
 
                 Some(ClientConfiguration {
@@ -82,17 +66,16 @@ impl Wifi {
         };
         let is_client = client_config.is_some();
 
-        println!("before set wifi config");
-
         self.wifi.set_configuration(&match client_config {
             Some(client_config) => Configuration::Mixed(client_config, ap_config),
             None => Configuration::AccessPoint(ap_config),
         })?;
 
-        println!("another");
-
         self.wifi.start()?;
-        wait_till_started(&self.wifi, &self.event_loop)?;
+        let wait_for = || self.wifi.is_started().unwrap();
+        if !WifiWait::new(&self.event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
+            panic!("wifi access point couldn't start");
+        }
 
         if is_client {
             self.wifi.connect()?;
