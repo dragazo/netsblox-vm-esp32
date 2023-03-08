@@ -29,11 +29,13 @@ CONFIG_ESP_HTTPS_SERVER_ENABLE=y
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y
 CONFIG_SPIRAM_MODE_OCT=y
 
+# malloc with spi ram and try to preserve as much internal memory as possible for system tasks
+CONFIG_SPIRAM_USE_MALLOC=y
+CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=262144
+CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
 # -----------------------------------------------------------
 
-# these fix nvs not working on esp-idf >=v5.0 (possibly also <v5.0, haven't tested)
+# these fix nvs not working with spi flash enabled
 CONFIG_ESPTOOLPY_OCT_FLASH=y
 CONFIG_ESPTOOLPY_FLASH_SAMPLE_MODE_STR=y
-
-# this fixes nvs not working on eps-idf <v5.0 (but may disable external flash all together)
-#CONFIG_SPI_FLASH_USE_LEGACY_IMPL=y

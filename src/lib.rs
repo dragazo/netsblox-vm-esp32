@@ -488,6 +488,7 @@ impl Executor {
                 }
                 idle_sleeper.consume(&res);
             });
+            running_env.collect_all();
         }
     }
 }
