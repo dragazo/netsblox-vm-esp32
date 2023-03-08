@@ -42,7 +42,7 @@ impl Key<Result<(), String>> for CommandKey {
     }
 }
 
-fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, client: &mut HttpClient, service: &str, rpc: &str, args: &[(&str, &Json)]) -> Result<C::Intermediate, String> {
+fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, rpc: &str, args: &[(&str, &Json)]) -> Result<C::Intermediate, String> {
     let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     let url = format!("{base_url}/services/{service}/{rpc}?uuid={client_id}&projectId={project_id}&roleId={role_id}&t={time}",
         base_url = context.base_url, client_id = context.client_id, project_id = context.project_id, role_id = context.role_id);
@@ -50,7 +50,7 @@ fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, client: &mut Htt
 
     println!("call_rpc: {url} : {args:?}");
 
-    let Response { status, body, content_type } = match client.request(Method::Post, &url, &[("Content-Type", "application/json")], serde_json::to_string(&args).unwrap().as_bytes()) {
+    let Response { status, body, content_type } = match http_request(Method::Post, &url, &[("Content-Type", "application/json")], serde_json::to_string(&args).unwrap().as_bytes()) {
         Ok(x) => x,
         Err(e) => return Err(format!("Failed to reach {} - {e:?}", context.base_url)),
     };
@@ -81,7 +81,6 @@ struct Context {
 }
 pub struct EspSystem<C: CustomTypes<Self>> {
     config: Config<C, Self>,
-    client: Arc<Mutex<HttpClient>>,
     context: Arc<Context>,
     rng: Mutex<ChaChaRng>,
     start_time: Instant,
@@ -99,7 +98,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             role_id: String::new(),
             role_name: String::new(),
         };
-        let mut client = HttpClient::new();
 
         fn log_heap(s: &str) {
             let (free_heap_size, internal_heap_size) = unsafe {
@@ -111,7 +109,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         log_heap("before newProject");
 
         { // scope these so we deallocate them and save precious memory
-            let resp = client.request(Method::Post, &format!("{}/api/newProject", context.base_url),
+            let resp = http_request(Method::Post, &format!("{}/api/newProject", context.base_url),
                 &[("Content-Type", "application/json")],
                 json!({
                     "clientId": context.client_id,
@@ -128,7 +126,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         log_heap("before setProjectName");
 
         { // scope these so we deallocate them and save precious memory
-            let resp = client.request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
+            let resp = http_request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
                 &[("Content-Type", "application/json")],
                 json!({
                     "projectId": context.project_id,
@@ -148,7 +146,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             request: Some(Rc::new(|system, _, key, request, _| match request {
                 Request::Rpc { service, rpc, args } => {
                     match args.into_iter().map(|(k, v)| Ok((k, v.to_json()?))).collect::<Result<Vec<_>,ToJsonError<_,_>>>() {
-                        Ok(args) => key.complete(call_rpc::<C, Self>(&system.context, &mut *system.client.lock().unwrap(), &service, &rpc, &args.iter().map(|x| (x.0.as_str(), &x.1)).collect::<Vec<_>>())),
+                        Ok(args) => key.complete(call_rpc::<C, Self>(&system.context, &service, &rpc, &args.iter().map(|x| (x.0.as_str(), &x.1)).collect::<Vec<_>>())),
                         Err(err) => key.complete(Err(format!("failed to convert RPC args to json: {err:?}"))),
                     }
                     RequestStatus::Handled
@@ -161,7 +159,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         EspSystem {
             config,
             context: Arc::new(context),
-            client: Arc::new(Mutex::new(client)),
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
             start_time: Instant::now(),
 
