@@ -20,38 +20,17 @@ pub fn http_request(method: Method, url: &str, headers: &[(&str, &str)], body: &
         ..Default::default()
     }).unwrap();
 
-    fn log_heap() {
-        let (free_heap_size, internal_heap_size) = unsafe {
-            (esp_idf_sys::esp_get_free_heap_size(), esp_idf_sys::esp_get_free_internal_heap_size())
-        };
-        println!("heap info {free_heap_size} : {internal_heap_size}");
-    }
-    println!("starting request: {url}");
-    log_heap();
-
     let content_len_str = format!("{}", body.len());
     let mut aug_headers = Vec::with_capacity(headers.len() + 1);
     aug_headers.extend_from_slice(headers);
     aug_headers.push(("Content-Length", &content_len_str));
 
-    println!("here");
-    if client.is_request_initiated() {
-        println!("there");
-        let _ = client.initiate_response(); // if in request state, transition to response state and ignore errors (caused by previous error)
-        println!("aft inner");
-    }
-    println!("before request");
     client.initiate_request(method, url, &aug_headers)?;
-    println!("aft request");
     client.write(body)?;
-    println!("aft body");
 
     client.initiate_response()?;
-    println!("aft init resp");
     let status = client.status();
     let content_type = client.header("Content-Type").map(ToOwned::to_owned);
-
-    println!("before body read");
 
     let mut body = vec![];
     let mut buf = [0u8; 256];
@@ -60,8 +39,6 @@ pub fn http_request(method: Method, url: &str, headers: &[(&str, &str)], body: &
         if len == 0 { break }
         body.extend_from_slice(&buf[..len]);
     }
-
-    println!("aft body read");
 
     Ok(Response { status, body, content_type })
 }

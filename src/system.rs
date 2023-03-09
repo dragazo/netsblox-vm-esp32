@@ -48,11 +48,9 @@ fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, r
         base_url = context.base_url, client_id = context.client_id, project_id = context.project_id, role_id = context.role_id);
     let args: BTreeMap<&str, &Json> = args.iter().copied().collect();
 
-    println!("call_rpc: {url} : {args:?}");
-
     let Response { status, body, content_type } = match http_request(Method::Post, &url, &[("Content-Type", "application/json")], serde_json::to_string(&args).unwrap().as_bytes()) {
         Ok(x) => x,
-        Err(e) => return Err(format!("Failed to reach {} - {e:?}", context.base_url)),
+        Err(e) => return Err(format!("Failed to reach {}", context.base_url)),
     };
 
     if !(200..300).contains(&status) {
@@ -99,15 +97,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             role_name: String::new(),
         };
 
-        fn log_heap(s: &str) {
-            let (free_heap_size, internal_heap_size) = unsafe {
-                (esp_idf_sys::esp_get_free_heap_size(), esp_idf_sys::esp_get_free_internal_heap_size())
-            };
-            println!("{s} --- heap info {free_heap_size} : {internal_heap_size}");
-        }
-
-        log_heap("before newProject");
-
         { // scope these so we deallocate them and save precious memory
             let resp = http_request(Method::Post, &format!("{}/api/newProject", context.base_url),
                 &[("Content-Type", "application/json")],
@@ -122,9 +111,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             context.role_name = meta["roleName"].as_str().unwrap().to_owned();
         }
 
-        log_heap("after newProject");
-        log_heap("before setProjectName");
-
         { // scope these so we deallocate them and save precious memory
             let resp = http_request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
                 &[("Content-Type", "application/json")],
@@ -136,8 +122,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
             context.project_name = meta["name"].as_str().unwrap().to_owned();
         }
-
-        log_heap("after setProjectName");
 
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");

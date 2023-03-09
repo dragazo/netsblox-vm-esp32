@@ -62,23 +62,6 @@ fn main() {
     // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
     esp_idf_sys::link_patches();
 
-    fn log_heap() {
-        let (free_heap_size, internal_heap_size) = unsafe {
-            (esp_idf_sys::esp_get_free_heap_size(), esp_idf_sys::esp_get_free_internal_heap_size())
-        };
-        println!("heap info {free_heap_size} : {internal_heap_size}");
-    }
-
-    // loop {
-    //     Vec::leak(vec![0u8; 1024]);
-    //     std::thread::sleep(std::time::Duration::from_millis(100));
-    //     log_heap();
-    // }
-
     let exe = Arc::new(Executor::take().unwrap().unwrap());
-
-    println!("after init");
-    log_heap();
-
     exe.run::<C>(Default::default());
 }
