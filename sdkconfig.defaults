@@ -25,6 +25,12 @@ CONFIG_ESP_HTTPS_SERVER_ENABLE=y
 
 # -----------------------------------------------------------
 
+# we don't want to have a cert for each server we connect to (local deployments, etc.), so skip server verification
+CONFIG_ESP_TLS_INSECURE=y
+CONFIG_ESP_TLS_SKIP_SERVER_CERT_VERIFY=y
+
+# -----------------------------------------------------------
+
 # these settings together successfully enable the 8MB external RAM chip
 CONFIG_ESP32S3_SPIRAM_SUPPORT=y
 CONFIG_SPIRAM_MODE_OCT=y

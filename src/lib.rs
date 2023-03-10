@@ -92,7 +92,10 @@ fn read_all(connection: &mut EspHttpConnection<'_>) -> Result<Vec<u8>, EspError>
 struct RootHandler;
 impl Handler<EspHttpConnection<'_>> for RootHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/html"),
+        ])?;
         connection.write(include_str!("www/index.html").as_bytes())?;
         Ok(())
     }
@@ -106,7 +109,10 @@ impl Handler<EspHttpConnection<'_>> for ExtensionHandler {
         let ip = match self.wifi.lock().unwrap().client_ip() {
             Some(x) => x,
             None => {
-                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+                connection.initiate_response(400, None, &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Content-Type", "text/plain"),
+                ])?;
                 connection.write(b"wifi client is not configured!")?;
                 return Ok(());
             }
@@ -119,7 +125,10 @@ impl Handler<EspHttpConnection<'_>> for ExtensionHandler {
             pull_interval: Duration::from_millis(500),
         }.render();
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*"), ("Content-Type", "application/javascript")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "application/javascript"),
+        ])?;
         connection.write(extension.as_bytes())?;
         Ok(())
     }
@@ -139,7 +148,10 @@ impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
             }).unwrap()
         };
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "application/json"),
+        ])?;
         connection.write(res.as_bytes())?;
         Ok(())
     }
@@ -153,7 +165,11 @@ impl Handler<EspHttpConnection<'_>> for GetProjectHandler {
         let project = self.storage.lock().unwrap().project().get()?;
         let project = project.as_deref().unwrap_or(EMPTY_PROJECT);
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "application/octet-stream"),
+            ("Content-Disposition", "attachment; filename=project.xml"),
+        ])?;
         connection.write(project.as_bytes())?;
         Ok(())
     }
@@ -167,7 +183,10 @@ impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
         let xml = match String::from_utf8(read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
-                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+                connection.initiate_response(400, None, &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Content-Type", "text/plain"),
+                ])?;
                 connection.write(b"failed to parse request body")?;
                 return Ok(());
             }
@@ -175,7 +194,10 @@ impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
 
         self.runtime.lock().unwrap().commands.push_back(ServerCommand::SetProject(xml));
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
         connection.write(b"loaded project")?;
         Ok(())
     }
@@ -191,13 +213,19 @@ impl Handler<EspHttpConnection<'_>> for InputHandler {
                 "start" => Input::Start,
                 "stop" => Input::Stop,
                 _ => {
-                    connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+                    connection.initiate_response(400, None, &[
+                        ("Access-Control-Allow-Origin", "*"),
+                        ("Content-Type", "text/plain"),
+                    ])?;
                     connection.write(b"unknown input sequence")?;
                     return Ok(());
                 }
             },
             Err(_) => {
-                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+                connection.initiate_response(400, None, &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Content-Type", "text/plain"),
+                ])?;
                 connection.write(b"failed to parse request body")?;
                 return Ok(());
             }
@@ -205,7 +233,10 @@ impl Handler<EspHttpConnection<'_>> for InputHandler {
 
         self.runtime.lock().unwrap().commands.push_back(ServerCommand::Input(input));
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
         connection.write(b"toggled pause state")?;
         Ok(())
     }
@@ -218,7 +249,10 @@ impl Handler<EspHttpConnection<'_>> for TogglePausedHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         self.runtime.lock().unwrap().running ^= true;
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("ContentType", "text/plain"),
+        ])?;
         connection.write(b"toggled pause state")?;
         Ok(())
     }
@@ -234,7 +268,10 @@ impl Handler<EspHttpConnection<'_>> for WipeHandler {
             storage.clear_all()?;
         }
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
         connection.write(b"wiped all data... restart the board to apply changes...")?;
         Ok(())
     }
@@ -258,14 +295,20 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
         let WifiConfig { kind, ssid, pass } = match serde_json::from_slice::<WifiConfig>(&read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
-                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+                connection.initiate_response(400, None, &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Content-Type", "text/plain"),
+                ])?;
                 connection.write(b"ERROR: failed to parse request body")?;
                 return Ok(());
             }
         };
 
         if !(2..32).contains(&ssid.len()) || !(8..64).contains(&pass.len()) {
-            connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+            connection.initiate_response(400, None, &[
+                ("Access-Control-Allow-Origin", "*"),
+                ("Content-Type", "text/plain"),
+            ])?;
             connection.write(b"ERROR: ssid or password had invalid length")?;
             return Ok(());
         }
@@ -284,7 +327,10 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
             }
         }
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
         connection.write(b"successfully updated wifi config... restart the board to apply changes...")?;
         Ok(())
     }
@@ -298,7 +344,10 @@ impl Handler<EspHttpConnection<'_>> for ServerHandler {
         let server = match String::from_utf8(read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
-                connection.initiate_response(400, None, &[("Access-Control-Allow-Origin", "*")])?;
+                connection.initiate_response(400, None, &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Content-Type", "text/plain"),
+                ])?;
                 connection.write(b"ERROR: failed to parse request body")?;
                 return Ok(());
             }
@@ -306,7 +355,10 @@ impl Handler<EspHttpConnection<'_>> for ServerHandler {
 
         self.storage.lock().unwrap().netsblox_server().set(&server)?;
 
-        connection.initiate_response(200, None, &[("Access-Control-Allow-Origin", "*")])?;
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
         connection.write(b"successfully updated netsblox server... restart the board to apply changes...")?;
         Ok(())
     }
@@ -445,7 +497,7 @@ impl Executor {
             running_env.proj.write(mc).input(Input::Start);
         });
 
-        tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> starting project\n");
+        tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> starting project (public id: {})\n", system.get_public_id());
 
         let mut idle_sleeper = IdleAction::new(YIELDS_BEFORE_IDLE_SLEEP, Box::new(|| thread::sleep(IDLE_SLEEP_TIME)));
 

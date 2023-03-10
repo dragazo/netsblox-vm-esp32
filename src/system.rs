@@ -1,22 +1,43 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::BTreeMap;
-use std::marker::PhantomData;
-use std::time::Instant;
-use std::sync::Mutex;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+use std::sync::mpsc::{Sender, Receiver, channel};
 use std::rc::Rc;
+use std::thread;
 
+use esp_idf_svc::ws::client::{EspWebSocketClient, EspWebSocketClientConfig, WebSocketEvent, WebSocketEventType};
+use esp_idf_svc::errors::EspIOError;
+use embedded_svc::ws::FrameType;
+use embedded_svc::http::Method;
+
+use uuid::Uuid;
 use rand::{Rng, SeedableRng};
 use rand::distributions::uniform::{SampleUniform, SampleRange};
 use rand_chacha::ChaChaRng;
 
-use netsblox_vm::runtime::{System, ErrorCause, Value, Entity, MaybeAsync, Request, Command, Config, AsyncResult, RequestStatus, CommandStatus, ToJsonError, CustomTypes, IntermediateType, Key};
-use netsblox_vm::json::{serde_json, Json, json, parse_json_slice};
+use netsblox_vm::runtime::{System, ErrorCause, Value, Entity, MaybeAsync, Request, Command, Config, AsyncResult, RequestStatus, CommandStatus, ToJsonError, CustomTypes, IntermediateType, Key, OutgoingMessage, IncomingMessage};
+use netsblox_vm::json::{serde_json, Json, JsonMap, json, parse_json, parse_json_slice};
 use netsblox_vm::gc::MutationContext;
 
-use embedded_svc::http::Method;
-
 use crate::http::*;
+
+const MESSAGE_REPLY_TIMEOUT_MS: u32 = 1500;
+
+#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
+pub struct ExternReplyKey {
+    request_id: String,
+}
+#[derive(Debug, Clone)]
+pub struct InternReplyKey {
+    src_id: String,
+    request_id: String,
+}
+
+struct ReplyEntry {
+    timestamp: Instant,
+    value: Option<Json>,
+}
 
 pub struct RequestKey<C: CustomTypes<S>, S: System<C>>(Arc<Mutex<AsyncResult<Result<C::Intermediate, String>>>>);
 impl<C: CustomTypes<S>, S: System<C>> RequestKey<C, S> {
@@ -50,7 +71,7 @@ fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, r
 
     let Response { status, body, content_type } = match http_request(Method::Post, &url, &[("Content-Type", "application/json")], serde_json::to_string(&args).unwrap().as_bytes()) {
         Ok(x) => x,
-        Err(e) => return Err(format!("Failed to reach {}", context.base_url)),
+        Err(_) => return Err(format!("Failed to reach {}", context.base_url)),
     };
 
     if !(200..300).contains(&status) {
@@ -80,10 +101,12 @@ struct Context {
 pub struct EspSystem<C: CustomTypes<Self>> {
     config: Config<C, Self>,
     context: Arc<Context>,
-    rng: Mutex<ChaChaRng>,
     start_time: Instant,
+    rng: Mutex<ChaChaRng>,
 
-    _todo: PhantomData<C>,
+    message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>>,
+    message_sender: Sender<OutgoingMessage<C, Self>>,
+    message_receiver: Receiver<IncomingMessage<C, Self>>,
 }
 impl<C: CustomTypes<Self>> EspSystem<C> {
     pub fn new(base_url: String, project_name: Option<&str>, config: Config<C, Self>) -> Self {
@@ -119,9 +142,125 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                     "name": context.project_name,
                 }).to_string().as_bytes()
             ).unwrap();
+            println!("rename raw res: {}", std::str::from_utf8(&resp.body).unwrap());
             let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
             context.project_name = meta["name"].as_str().unwrap().to_owned();
         }
+
+        let context = Arc::new(context);
+        let message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>> = Arc::new(Mutex::new(Default::default()));
+
+        let (message_sender, message_receiver) = { // scope these so we deallocate them and save precious memory
+            let (msg_in_sender, msg_in_receiver) = channel::<IncomingMessage<C, Self>>();
+            let (msg_out_sender, msg_out_receiver) = channel::<OutgoingMessage<C, Self>>();
+            let (ws_sender, ws_receiver) = channel::<String>();
+
+            let (context_clone_1, context_clone_2) = (context.clone(), context.clone());
+            let message_replies = message_replies.clone();
+
+            let ws_config = EspWebSocketClientConfig::default();
+            let ws_url = if let Some(x) = context.base_url.strip_prefix("http") { format!("ws{x}") } else { format!("wss://{}", context.base_url) };
+            let ws_sender_clone = ws_sender.clone();
+            let ws_on_msg = move |x: &Result<WebSocketEvent, EspIOError>| {
+                let mut msg = match x {
+                    Ok(x) => {
+                        println!("ws event type: {:?}", x.event_type);
+                        match x.event_type {
+                            WebSocketEventType::Connected => {
+                                ws_sender_clone.send(json!({ "type": "set-uuid", "clientId": context_clone_1.client_id }).to_string()).unwrap();
+                                return;
+                            }
+                            WebSocketEventType::Text(raw) => {
+                                match parse_json::<BTreeMap<String, Json>>(raw) {
+                                    Ok(x) => x,
+                                    Err(_) => return,
+                                }
+                            }
+                            _ => return,
+                        }
+                    }
+                    Err(e) => {
+                        println!("ws error: {e:?}");
+                        return;
+                    }
+                };
+
+                println!("received ws msg: {msg:?}");
+
+                match msg.get("type").and_then(Json::as_str).unwrap_or("unknown") {
+                    "ping" => ws_sender_clone.send(json!({ "type": "pong" }).to_string()).unwrap(),
+                    "message" => {
+                        let (msg_type, values) = match (msg.remove("msgType"), msg.remove("requestId")) {
+                            (Some(Json::String(msg_type)), Some(Json::Object(values))) => (msg_type, values),
+                            _ => return,
+                        };
+                        if msg_type == "__reply__" {
+                            let (value, reply_key) = match ({ values }.remove("body"), msg.remove("requestId")) {
+                                (Some(value), Some(Json::String(request_id))) => (value, ExternReplyKey { request_id }),
+                                _ => return,
+                            };
+                            if let Some(entry) = message_replies.lock().unwrap().get_mut(&reply_key) {
+                                if entry.value.is_none() {
+                                    entry.value = Some(value);
+                                }
+                            }
+                        } else {
+                            let reply_key = match msg.contains_key("requestId") {
+                                true => match (msg.remove("srcId"), msg.remove("requestId")) {
+                                    (Some(Json::String(src_id)), Some(Json::String(request_id))) => Some(InternReplyKey { src_id, request_id }),
+                                    _ => return,
+                                }
+                                false => None,
+                            };
+                            msg_in_sender.send(IncomingMessage { msg_type, values: values.into_iter().collect(), reply_key }).unwrap();
+                        }
+                    }
+                    _ => (),
+                }
+            };
+            let mut ws_client = EspWebSocketClient::new(ws_url, &ws_config, Duration::from_secs(10), ws_on_msg).unwrap();
+
+            thread::spawn(move || {
+                while let Ok(packet) = ws_receiver.recv() {
+                    println!("sending ws msg {packet:?}");
+                    println!("internal memory: {}", unsafe { esp_idf_sys::esp_get_free_internal_heap_size() });
+                    ws_client.send(FrameType::Text(false), packet.as_bytes()).unwrap();
+                    println!("after send");
+                }
+            });
+
+            thread::spawn(move || {
+                while let Ok(request) = msg_out_receiver.recv() {
+                    let msg = match request {
+                        OutgoingMessage::Normal { msg_type, values, targets } => json!({
+                            "type": "message",
+                            "dstId": targets,
+                            "srcId": format!("{}@{}", context_clone_2.project_name, context_clone_2.client_id),
+                            "msgType": msg_type,
+                            "content": values.into_iter().collect::<JsonMap<_,_>>(),
+                        }),
+                        OutgoingMessage::Blocking { msg_type, values, targets, reply_key } => json!({
+                            "type": "message",
+                            "dstId": targets,
+                            "srcId": format!("{}@{}", context_clone_2.project_name, context_clone_2.client_id),
+                            "msgType": msg_type,
+                            "requestId": reply_key.request_id,
+                            "content": values.into_iter().collect::<JsonMap<_,_>>(),
+                        }),
+                        OutgoingMessage::Reply { value, reply_key } => json!({
+                            "type": "message",
+                            "dstId": reply_key.src_id,
+                            "msgType": "__reply__",
+                            "requestId": reply_key.request_id,
+                            "content": { "body": value },
+                        }),
+                    };
+                    ws_sender.send(msg.to_string()).unwrap();
+                }
+            });
+
+            (msg_out_sender, msg_in_receiver)
+        };
 
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");
@@ -141,13 +280,15 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         });
 
         EspSystem {
-            config,
-            context: Arc::new(context),
+            config, context, message_replies, message_sender, message_receiver,
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
             start_time: Instant::now(),
-
-            _todo: PhantomData,
         }
+    }
+
+    /// Gets the public id of the running system that can be used to send messages to this client.
+    pub fn get_public_id(&self) -> String {
+        format!("{}@{}", self.context.project_name, self.context.client_id)
     }
 }
 
@@ -155,8 +296,8 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
     type RequestKey = RequestKey<C, Self>;
     type CommandKey = CommandKey;
 
-    type ExternReplyKey = ();
-    type InternReplyKey = ();
+    type ExternReplyKey = ExternReplyKey;
+    type InternReplyKey = InternReplyKey;
 
     fn rand<T, R>(&self, range: R) -> Result<T, ErrorCause<C, Self>> where T: SampleUniform, R: SampleRange<T> {
         Ok(self.rng.lock().unwrap().gen_range(range))
@@ -203,16 +344,34 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
         Ok(key.poll())
     }
 
-    fn send_message(&self, _msg_type: String, _values: Vec<(String, Json)>, _targets: Vec<String>, _expect_reply: bool) -> Result<Option<Self::ExternReplyKey>, ErrorCause<C, Self>> {
-        unimplemented!()
+    fn send_message(&self, msg_type: String, values: Vec<(String, Json)>, targets: Vec<String>, expect_reply: bool) -> Result<Option<Self::ExternReplyKey>, ErrorCause<C, Self>> {
+        let (msg, reply_key) = match expect_reply {
+            false => (OutgoingMessage::Normal { msg_type, values, targets }, None),
+            true => {
+                let reply_key = ExternReplyKey { request_id: Uuid::new_v4().to_string() };
+                self.message_replies.lock().unwrap().insert(reply_key.clone(), ReplyEntry { timestamp: Instant::now(), value: None });
+                (OutgoingMessage::Blocking { msg_type, values, targets, reply_key: reply_key.clone() }, Some(reply_key))
+            }
+        };
+        self.message_sender.send(msg).unwrap();
+        Ok(reply_key)
     }
-    fn poll_reply(&self, _key: &Self::ExternReplyKey) -> AsyncResult<Option<Json>> {
-        unimplemented!()
+    fn poll_reply(&self, key: &Self::ExternReplyKey) -> AsyncResult<Option<Json>> {
+        let mut message_replies = self.message_replies.lock().unwrap();
+        let entry = message_replies.get(key).unwrap();
+        if entry.value.is_some() {
+            return AsyncResult::Completed(message_replies.remove(key).unwrap().value);
+        }
+        if entry.timestamp.elapsed().as_millis() as u32 >= MESSAGE_REPLY_TIMEOUT_MS {
+            message_replies.remove(key).unwrap();
+            return AsyncResult::Completed(None);
+        }
+        AsyncResult::Pending
     }
-    fn send_reply(&self, _key: Self::InternReplyKey, _value: Json) -> Result<(), ErrorCause<C, Self>> {
-        unimplemented!()
+    fn send_reply(&self, key: Self::InternReplyKey, value: Json) -> Result<(), ErrorCause<C, Self>> {
+        Ok(self.message_sender.send(OutgoingMessage::Reply { value, reply_key: key }).unwrap())
     }
-    fn receive_message(&self) -> Option<(String, Vec<(String, Json)>, Option<Self::InternReplyKey>)> {
-        None
+    fn receive_message(&self) -> Option<IncomingMessage<C, Self>> {
+        self.message_receiver.try_recv().ok()
     }
 }

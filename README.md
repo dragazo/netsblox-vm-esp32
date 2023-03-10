@@ -1,3 +1,9 @@
+## Hardware
+
+The code included in this repository should be able to build and run on any esp32 board.
+However, there are some specific settings in [`sdconfig.defaults`](sdkconfig.defaults) and [`config.toml`](.cargo/config.toml) that would likely need to be changed.
+The included settings are configured to run on an ESP32-S3 N32R8, though it should also work without modification for an N16R8.
+
 ## Installation
 
 To start, you'll need to install the espressif fork of the rust toolchain for building on esp32 targets.
