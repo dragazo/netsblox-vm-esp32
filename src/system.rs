@@ -120,34 +120,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             role_name: String::new(),
         };
 
-        { // scope these so we deallocate them and save precious memory
-            let resp = http_request(Method::Post, &format!("{}/api/newProject", context.base_url),
-                &[("Content-Type", "application/json")],
-                json!({
-                    "clientId": context.client_id,
-                    "roleName": "monad",
-                }).to_string().as_bytes()
-            ).unwrap();
-            let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
-            context.project_id = meta["projectId"].as_str().unwrap().to_owned();
-            context.role_id = meta["roleId"].as_str().unwrap().to_owned();
-            context.role_name = meta["roleName"].as_str().unwrap().to_owned();
-        }
-
-        { // scope these so we deallocate them and save precious memory
-            let resp = http_request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
-                &[("Content-Type", "application/json")],
-                json!({
-                    "projectId": context.project_id,
-                    "name": context.project_name,
-                }).to_string().as_bytes()
-            ).unwrap();
-            println!("rename raw res: {}", std::str::from_utf8(&resp.body).unwrap());
-            let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
-            context.project_name = meta["name"].as_str().unwrap().to_owned();
-        }
-
-        let context = Arc::new(context);
         let message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>> = Arc::new(Mutex::new(Default::default()));
 
         let (message_sender, message_receiver) = { // scope these so we deallocate them and save precious memory
@@ -155,19 +127,21 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             let (msg_out_sender, msg_out_receiver) = channel::<OutgoingMessage<C, Self>>();
             let (ws_sender, ws_receiver) = channel::<String>();
 
-            let (context_clone_1, context_clone_2) = (context.clone(), context.clone());
-            let message_replies = message_replies.clone();
-
-            let ws_config = EspWebSocketClientConfig::default();
+            let ws_config = EspWebSocketClientConfig {
+                task_stack: 8000, // default caused stack overflow
+                ..Default::default()
+            };
             let ws_url = if let Some(x) = context.base_url.strip_prefix("http") { format!("ws{x}") } else { format!("wss://{}", context.base_url) };
             let ws_sender_clone = ws_sender.clone();
+            let message_replies = message_replies.clone();
+            let client_id = context.client_id.clone();
             let ws_on_msg = move |x: &Result<WebSocketEvent, EspIOError>| {
                 let mut msg = match x {
                     Ok(x) => {
                         println!("ws event type: {:?}", x.event_type);
                         match x.event_type {
                             WebSocketEventType::Connected => {
-                                ws_sender_clone.send(json!({ "type": "set-uuid", "clientId": context_clone_1.client_id }).to_string()).unwrap();
+                                ws_sender_clone.send(json!({ "type": "set-uuid", "clientId": client_id }).to_string()).unwrap();
                                 return;
                             }
                             WebSocketEventType::Text(raw) => {
@@ -229,20 +203,22 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                 }
             });
 
+            let project_name = context.project_name.clone();
+            let client_id = context.client_id.clone();
             thread::spawn(move || {
                 while let Ok(request) = msg_out_receiver.recv() {
                     let msg = match request {
                         OutgoingMessage::Normal { msg_type, values, targets } => json!({
                             "type": "message",
                             "dstId": targets,
-                            "srcId": format!("{}@{}", context_clone_2.project_name, context_clone_2.client_id),
+                            "srcId": format!("{}@{}", project_name, client_id),
                             "msgType": msg_type,
                             "content": values.into_iter().collect::<JsonMap<_,_>>(),
                         }),
                         OutgoingMessage::Blocking { msg_type, values, targets, reply_key } => json!({
                             "type": "message",
                             "dstId": targets,
-                            "srcId": format!("{}@{}", context_clone_2.project_name, context_clone_2.client_id),
+                            "srcId": format!("{}@{}", project_name, client_id),
                             "msgType": msg_type,
                             "requestId": reply_key.request_id,
                             "content": values.into_iter().collect::<JsonMap<_,_>>(),
@@ -261,6 +237,35 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
 
             (msg_out_sender, msg_in_receiver)
         };
+
+        { // scope these so we deallocate them and save precious memory
+            let resp = http_request(Method::Post, &format!("{}/api/newProject", context.base_url),
+                &[("Content-Type", "application/json")],
+                json!({
+                    "clientId": context.client_id,
+                    "roleName": "monad",
+                }).to_string().as_bytes()
+            ).unwrap();
+            let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
+            context.project_id = meta["projectId"].as_str().unwrap().to_owned();
+            context.role_id = meta["roleId"].as_str().unwrap().to_owned();
+            context.role_name = meta["roleName"].as_str().unwrap().to_owned();
+        }
+
+        { // scope these so we deallocate them and save precious memory
+            let resp = http_request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
+                &[("Content-Type", "application/json")],
+                json!({
+                    "projectId": context.project_id,
+                    "name": context.project_name,
+                }).to_string().as_bytes()
+            ).unwrap();
+            println!("rename raw res: {}", std::str::from_utf8(&resp.body).unwrap());
+            let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
+            context.project_name = meta["name"].as_str().unwrap().to_owned();
+        }
+
+        let context = Arc::new(context);
 
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");
