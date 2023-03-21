@@ -164,7 +164,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                 match msg.get("type").and_then(Json::as_str).unwrap_or("unknown") {
                     "ping" => ws_sender_clone.send(json!({ "type": "pong" }).to_string()).unwrap(),
                     "message" => {
-                        let (msg_type, values) = match (msg.remove("msgType"), msg.remove("requestId")) {
+                        let (msg_type, values) = match (msg.remove("msgType"), msg.remove("content")) {
                             (Some(Json::String(msg_type)), Some(Json::Object(values))) => (msg_type, values),
                             _ => return,
                         };
@@ -186,7 +186,9 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                                 }
                                 false => None,
                             };
+                            println!("before final sender: {msg_type:?} {values:?}");
                             msg_in_sender.send(IncomingMessage { msg_type, values: values.into_iter().collect(), reply_key }).unwrap();
+                            println!("after final sender");
                         }
                     }
                     _ => (),
@@ -350,6 +352,8 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
     }
 
     fn send_message(&self, msg_type: String, values: Vec<(String, Json)>, targets: Vec<String>, expect_reply: bool) -> Result<Option<Self::ExternReplyKey>, ErrorCause<C, Self>> {
+        println!("send message raw {msg_type:?} {values:?} {targets:?} {expect_reply:?}");
+
         let (msg, reply_key) = match expect_reply {
             false => (OutgoingMessage::Normal { msg_type, values, targets }, None),
             true => {
@@ -377,6 +381,12 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
         Ok(self.message_sender.send(OutgoingMessage::Reply { value, reply_key: key }).unwrap())
     }
     fn receive_message(&self) -> Option<IncomingMessage<C, Self>> {
-        self.message_receiver.try_recv().ok()
+        let res = self.message_receiver.try_recv().ok();
+
+        if let Some(res) = res.as_ref() {
+            println!("received message: {:?} {:?}", res.msg_type, res.values);
+        }
+
+        res
     }
 }
