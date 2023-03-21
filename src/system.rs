@@ -138,7 +138,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             let ws_on_msg = move |x: &Result<WebSocketEvent, EspIOError>| {
                 let mut msg = match x {
                     Ok(x) => {
-                        println!("ws event type: {:?}", x.event_type);
                         match x.event_type {
                             WebSocketEventType::Connected => {
                                 ws_sender_clone.send(json!({ "type": "set-uuid", "clientId": client_id }).to_string()).unwrap();
@@ -153,13 +152,8 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                             _ => return,
                         }
                     }
-                    Err(e) => {
-                        println!("ws error: {e:?}");
-                        return;
-                    }
+                    Err(_) => return,
                 };
-
-                println!("received ws msg: {msg:?}");
 
                 match msg.get("type").and_then(Json::as_str).unwrap_or("unknown") {
                     "ping" => ws_sender_clone.send(json!({ "type": "pong" }).to_string()).unwrap(),
@@ -186,9 +180,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                                 }
                                 false => None,
                             };
-                            println!("before final sender: {msg_type:?} {values:?}");
                             msg_in_sender.send(IncomingMessage { msg_type, values: values.into_iter().collect(), reply_key }).unwrap();
-                            println!("after final sender");
                         }
                     }
                     _ => (),
@@ -198,10 +190,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
 
             thread::spawn(move || {
                 while let Ok(packet) = ws_receiver.recv() {
-                    println!("sending ws msg {packet:?}");
-                    println!("internal memory: {}", unsafe { esp_idf_sys::esp_get_free_internal_heap_size() });
                     ws_client.send(FrameType::Text(false), packet.as_bytes()).unwrap();
-                    println!("after send");
                 }
             });
 
@@ -262,7 +251,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                     "name": context.project_name,
                 }).to_string().as_bytes()
             ).unwrap();
-            println!("rename raw res: {}", std::str::from_utf8(&resp.body).unwrap());
             let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
             context.project_name = meta["name"].as_str().unwrap().to_owned();
         }
@@ -352,8 +340,6 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
     }
 
     fn send_message(&self, msg_type: String, values: Vec<(String, Json)>, targets: Vec<String>, expect_reply: bool) -> Result<Option<Self::ExternReplyKey>, ErrorCause<C, Self>> {
-        println!("send message raw {msg_type:?} {values:?} {targets:?} {expect_reply:?}");
-
         let (msg, reply_key) = match expect_reply {
             false => (OutgoingMessage::Normal { msg_type, values, targets }, None),
             true => {
@@ -381,12 +367,6 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
         Ok(self.message_sender.send(OutgoingMessage::Reply { value, reply_key: key }).unwrap())
     }
     fn receive_message(&self) -> Option<IncomingMessage<C, Self>> {
-        let res = self.message_receiver.try_recv().ok();
-
-        if let Some(res) = res.as_ref() {
-            println!("received message: {:?} {:?}", res.msg_type, res.values);
-        }
-
-        res
+        self.message_receiver.try_recv().ok()
     }
 }
