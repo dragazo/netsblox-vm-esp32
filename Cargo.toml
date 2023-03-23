@@ -38,6 +38,7 @@ rand = { version = "0.8.5", default-features = false }
 rand_chacha = { version = "0.3.1" }
 getrandom = { version = "0.2.8" }
 uuid = { version = "1.3.0", default-features = false, features = ["v4", "fast-rng"] }
+string-ring = { version = "0.1.1", default-features = false }
 
 [build-dependencies]
 embuild = "0.31"

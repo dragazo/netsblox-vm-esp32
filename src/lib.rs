@@ -4,8 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use std::{mem, thread};
+use std::fmt::Write;
 use std::rc::Rc;
+use std::thread;
 
 use esp_idf_svc::http::server::{EspHttpServer, EspHttpConnection, Configuration};
 use esp_idf_svc::nvs::{EspDefaultNvs, EspDefaultNvsPartition};
@@ -22,7 +23,9 @@ use embedded_svc::http::Method;
 
 use serde::Deserialize;
 
-use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT, Status};
+use string_ring::{StringRing, Granularity};
+
+use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT};
 use netsblox_vm::process::ErrorSummary;
 use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
@@ -46,6 +49,10 @@ use crate::wifi::*;
 const YIELDS_BEFORE_IDLE_SLEEP: usize = 256;
 const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1ms precision (minimum value before no-op)
 
+// max size of output and error (circular) buffers between status polls
+const OUTPUT_BUFFER_SIZE: usize = 64 * 1024;
+const ERROR_BUFFER_SIZE: usize = 64 * 1024;
+
 #[derive(Collect)]
 #[collect(no_drop, bound = "")]
 struct Env<'gc, C: CustomTypes<S>, S: System<C>> {
@@ -55,7 +62,7 @@ struct Env<'gc, C: CustomTypes<S>, S: System<C>> {
 type EnvArena<C, S> = Arena<Rootable![Env<'gc, C, S>]>;
 
 fn get_env<C: CustomTypes<S>, S: System<C>>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<C, S>, CompileError> {
-    let (bytecode, init_info, _, locs) = ByteCode::compile(role).unwrap();
+    let (bytecode, init_info, locs, _) = ByteCode::compile(role).unwrap();
     Ok(EnvArena::new(Default::default(), |mc| {
         let proj = Project::from_init(mc, &init_info, Rc::new(bytecode), Default::default(), system);
         Env { proj: GcCell::allocate(mc, proj), locs }
@@ -141,11 +148,24 @@ impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         let res = {
             let mut runtime = self.runtime.lock().unwrap();
-            serde_json::to_string(&Status{
-                running: runtime.running,
-                output: mem::take(&mut runtime.output),
-                errors: mem::take(&mut runtime.errors),
-            }).unwrap()
+
+            let mut res = String::with_capacity(256 + runtime.output.len() + runtime.errors.len());
+            let running = runtime.running;
+            write!(res, r#"{{"running":{:?},"output":{:?},"errors":["#, running, runtime.output.make_contiguous()).unwrap();
+            let mut errors = runtime.errors.make_contiguous().lines();
+            if let Some(error) = errors.next() {
+                res.push_str(error);
+                for error in errors {
+                    res.push(',');
+                    res.push_str(error);
+                }
+            }
+            res.push_str("]}");
+
+            runtime.output.clear();
+            runtime.errors.clear();
+
+            res
         };
 
         connection.initiate_response(200, None, &[
@@ -371,8 +391,8 @@ enum ServerCommand {
 
 pub struct RuntimeContext {
     running: bool,
-    output: String,
-    errors: Vec<ErrorSummary>,
+    output: StringRing,
+    errors: StringRing,
     commands: VecDeque<ServerCommand>,
 }
 
@@ -408,10 +428,13 @@ impl Executor {
             }
         }
 
+        let mut output = StringRing::new(OUTPUT_BUFFER_SIZE, Granularity::Line);
+        let errors = StringRing::new(ERROR_BUFFER_SIZE, Granularity::Line);
+        output.push("\n>>> booting...\n\n");
+
         let runtime = Arc::new(Mutex::new(RuntimeContext {
+            output, errors,
             running: true,
-            output: "\n>>> booting...\n\n".into(),
-            errors: Default::default(),
             commands: Default::default(),
         }));
 
@@ -463,8 +486,8 @@ impl Executor {
                 let msg = format!($($t)*);
                 println!("{msg}");
                 let runtime = $runtime;
-                runtime.output.push_str(&msg);
-                runtime.output.push('\n');
+                runtime.output.push(&msg);
+                runtime.output.push("\n");
             }}
         }
 
@@ -534,9 +557,13 @@ impl Executor {
                 let res = running_env.proj.write(mc).step(mc);
                 if let ProjectStep::Error { error, proc } = &res {
                     let err = ErrorSummary::extract(error, proc, &running_env.locs);
+                    let err_str = serde_json::to_string(&err).unwrap();
+                    debug_assert_eq!(err_str.lines().count(), 1);
+
                     let mut runtime = self.runtime.lock().unwrap();
                     tee_println!(&mut runtime => "\n>>> error {}\n", err.cause);
-                    runtime.errors.push(err);
+                    runtime.errors.push(&err_str);
+                    runtime.errors.push("\n");
                 }
                 idle_sleeper.consume(&res);
             });
