@@ -96,6 +96,21 @@ fn read_all(connection: &mut EspHttpConnection<'_>) -> Result<Vec<u8>, EspError>
     Ok(res)
 }
 
+struct CorsOptionsHandler;
+impl Handler<EspHttpConnection<'_>> for CorsOptionsHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        println!("options 1");
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
+        println!("options 2");
+        connection.write(b"")?;
+        println!("options 3");
+        Ok(())
+    }
+}
+
 struct RootHandler;
 impl Handler<EspHttpConnection<'_>> for RootHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
@@ -168,11 +183,14 @@ impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
             res
         };
 
+        println!("pull 1");
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "application/json"),
         ])?;
+        println!("pull 2");
         connection.write(res.as_bytes())?;
+        println!("pull 3");
         Ok(())
     }
 }
@@ -460,22 +478,31 @@ impl Executor {
             ..Default::default()
         }).unwrap();
 
-        server.handler("/", Method::Get, RootHandler).unwrap();
-        server.handler("/wipe", Method::Post, WipeHandler { storage: self.storage.clone() }).unwrap();
-        server.handler("/wifi", Method::Post, WifiConfigHandler { storage: self.storage.clone() }).unwrap();
-        server.handler("/server", Method::Post, ServerHandler { storage: self.storage.clone() }).unwrap();
+        macro_rules! server_handler {
+            ($uri:literal : $($method:path => $handler:expr),*$(,)?) => {{
+                $(server.handler($uri, $method, $handler).unwrap();)*
+                server.handler($uri, Method::Options, CorsOptionsHandler).unwrap();
+            }}
+        }
+
+        server_handler!("/": Method::Get => RootHandler);
+        server_handler!("/wipe": Method::Post => WipeHandler { storage: self.storage.clone() });
+        server_handler!("/wifi": Method::Post => WifiConfigHandler { storage: self.storage.clone() });
+        server_handler!("/server": Method::Post => ServerHandler { storage: self.storage.clone() });
 
         // if we're not connected to the internet, just host the board config server and do nothing else
         let client_ip = client_ip.unwrap_or_else(|| loop {
             thread::sleep(Duration::from_secs(1));
         });
 
-        server.handler("/extension.js", Method::Get, ExtensionHandler { wifi: self.wifi.clone() }).unwrap();
-        server.handler("/pull", Method::Post, PullStatusHandler { runtime: self.runtime.clone() }).unwrap();
-        server.handler("/project", Method::Get, GetProjectHandler { storage: self.storage.clone() }).unwrap();
-        server.handler("/project", Method::Post, SetProjectHandler { runtime: self.runtime.clone() }).unwrap();
-        server.handler("/input", Method::Post, InputHandler { runtime: self.runtime.clone() }).unwrap();
-        server.handler("/toggle-paused", Method::Post, TogglePausedHandler { runtime: self.runtime.clone() }).unwrap();
+        server_handler!("/extension.js": Method::Get => ExtensionHandler { wifi: self.wifi.clone() });
+        server_handler!("/pull": Method::Post => PullStatusHandler { runtime: self.runtime.clone() });
+        server_handler!("/input": Method::Post => InputHandler { runtime: self.runtime.clone() });
+        server_handler!("/toggle-paused": Method::Post => TogglePausedHandler { runtime: self.runtime.clone() });
+        server_handler!("/project":
+            Method::Get => GetProjectHandler { storage: self.storage.clone() },
+            Method::Post => SetProjectHandler { runtime: self.runtime.clone() },
+        );
 
         let server_addr = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
 
