@@ -99,14 +99,11 @@ fn read_all(connection: &mut EspHttpConnection<'_>) -> Result<Vec<u8>, EspError>
 struct CorsOptionsHandler;
 impl Handler<EspHttpConnection<'_>> for CorsOptionsHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        println!("options 1");
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "text/plain"),
         ])?;
-        println!("options 2");
         connection.write(b"")?;
-        println!("options 3");
         Ok(())
     }
 }
@@ -183,14 +180,11 @@ impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
             res
         };
 
-        println!("pull 1");
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "application/json"),
         ])?;
-        println!("pull 2");
         connection.write(res.as_bytes())?;
-        println!("pull 3");
         Ok(())
     }
 }
