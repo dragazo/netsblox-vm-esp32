@@ -3,7 +3,7 @@ use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::wifi::{EspWifi, WifiWait};
+use esp_idf_svc::wifi::EspWifi;
 use esp_idf_svc::nvs::{EspDefaultNvsPartition};
 use esp_idf_svc::netif::{EspNetif, EspNetifWait};
 
@@ -49,6 +49,10 @@ impl Wifi {
             ..Default::default()
         };
 
+        // required prior to scan
+        self.wifi.set_configuration(&Configuration::Client(Default::default()))?;
+        self.wifi.start()?;
+
         let client_config = match (client_ssid, client_pass) {
             (Some(ssid), Some(pass)) => {
                 let aps = self.wifi.driver_mut().scan()?;
@@ -70,12 +74,6 @@ impl Wifi {
             Some(client_config) => Configuration::Mixed(client_config, ap_config),
             None => Configuration::AccessPoint(ap_config),
         })?;
-
-        self.wifi.start()?;
-        let wait_for = || self.wifi.is_started().unwrap();
-        if !WifiWait::new(&self.event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
-            panic!("wifi access point couldn't start");
-        }
 
         if is_client {
             self.wifi.connect()?;
