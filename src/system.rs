@@ -39,13 +39,20 @@ struct ReplyEntry {
     value: Option<Json>,
 }
 
-pub struct RequestKey<C: CustomTypes<S>, S: System<C>>(Arc<Mutex<AsyncResult<Result<C::Intermediate, String>>>>);
-impl<C: CustomTypes<S>, S: System<C>> RequestKey<C, S> {
+struct RpcRequest<C: CustomTypes<EspSystem<C>>> {
+    service: String,
+    rpc: String,
+    args: BTreeMap<String, Json>,
+    key: RequestKey<C>,
+}
+
+pub struct RequestKey<C: CustomTypes<EspSystem<C>>>(Arc<Mutex<AsyncResult<Result<C::Intermediate, String>>>>);
+impl<C: CustomTypes<EspSystem<C>>> RequestKey<C> {
     pub(crate) fn poll(&self) -> AsyncResult<Result<C::Intermediate, String>> {
         self.0.lock().unwrap().poll()
     }
 }
-impl<C: CustomTypes<S>, S: System<C>> Key<Result<C::Intermediate, String>> for RequestKey<C, S> {
+impl<C: CustomTypes<EspSystem<C>>> Key<Result<C::Intermediate, String>> for RequestKey<C> {
     fn complete(self, value: Result<C::Intermediate, String>) {
         assert!(self.0.lock().unwrap().complete(value).is_ok())
     }
@@ -63,11 +70,10 @@ impl Key<Result<(), String>> for CommandKey {
     }
 }
 
-fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, rpc: &str, args: &[(&str, &Json)]) -> Result<C::Intermediate, String> {
+fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, rpc: &str, args: &BTreeMap<String, Json>) -> Result<C::Intermediate, String> {
     let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
     let url = format!("{base_url}/services/{service}/{rpc}?uuid={client_id}&projectId={project_id}&roleId={role_id}&t={time}",
         base_url = context.base_url, client_id = context.client_id, project_id = context.project_id, role_id = context.role_id);
-    let args: BTreeMap<&str, &Json> = args.iter().copied().collect();
 
     let Response { status, body, content_type } = match http_request(Method::Post, &url, &[("Content-Type", "application/json")], serde_json::to_string(&args).unwrap().as_bytes()) {
         Ok(x) => x,
@@ -103,6 +109,8 @@ pub struct EspSystem<C: CustomTypes<Self>> {
     context: Arc<Context>,
     start_time: Instant,
     rng: Mutex<ChaChaRng>,
+
+    rpc_request_sender: Sender<RpcRequest<C>>,
 
     message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>>,
     message_sender: Sender<OutgoingMessage<C, Self>>,
@@ -257,14 +265,25 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
 
         let context = Arc::new(context);
 
+        let rpc_request_sender = {
+            let (rpc_request_sender, rpc_request_receiver) = channel::<RpcRequest<C>>();
+            let context = context.clone();
+            thread::spawn(move || {
+                while let Ok(RpcRequest { service, rpc, args, key }) = rpc_request_receiver.recv() {
+                    key.complete(call_rpc::<C, Self>(&*context, &service, &rpc, &args));
+                }
+            });
+            rpc_request_sender
+        };
+
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");
 
         let config = config.fallback(&Config {
             request: Some(Rc::new(|system, _, key, request, _| match request {
                 Request::Rpc { service, rpc, args } => {
-                    match args.into_iter().map(|(k, v)| Ok((k, v.to_json()?))).collect::<Result<Vec<_>,ToJsonError<_,_>>>() {
-                        Ok(args) => key.complete(call_rpc::<C, Self>(&system.context, &service, &rpc, &args.iter().map(|x| (x.0.as_str(), &x.1)).collect::<Vec<_>>())),
+                    match args.into_iter().map(|(k, v)| Ok((k, v.to_json()?))).collect::<Result<BTreeMap<_,_>,ToJsonError<_,_>>>() {
+                        Ok(args) => system.rpc_request_sender.send(RpcRequest { service, rpc, args, key }).unwrap(),
                         Err(err) => key.complete(Err(format!("failed to convert RPC args to json: {err:?}"))),
                     }
                     RequestStatus::Handled
@@ -275,7 +294,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         });
 
         EspSystem {
-            config, context, message_replies, message_sender, message_receiver,
+            config, context, message_replies, message_sender, message_receiver, rpc_request_sender,
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
             start_time: Instant::now(),
         }
@@ -288,7 +307,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
 }
 
 impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
-    type RequestKey = RequestKey<C, Self>;
+    type RequestKey = RequestKey<C>;
     type CommandKey = CommandKey;
 
     type ExternReplyKey = ExternReplyKey;

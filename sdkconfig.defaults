@@ -16,6 +16,7 @@ CONFIG_FREERTOS_HZ=1000
 
 # rust needs more stack storage than C, so override it
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=20000
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=6000
 
 # disable idle watchdog for main task (to avoid non-yielding user code from triggering the watchdog)
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
@@ -44,6 +45,11 @@ CONFIG_SPIRAM_MODE_OCT=y
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=262144
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
+
+# misc settings to try to save more internal memory
+CONFIG_SPIRAM_ALLOW_STACK_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_ALLOW_BSS_SEG_EXTERNAL_MEMORY=y
+CONFIG_SPIRAM_ALLOW_NOINIT_SEG_EXTERNAL_MEMORY=y
 
 # -----------------------------------------------------------
 

@@ -158,6 +158,8 @@ struct PullStatusHandler {
 }
 impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        println!("free memory: {:?}", unsafe { (esp_idf_sys::esp_get_free_heap_size(), esp_idf_sys::esp_get_free_internal_heap_size()) });
+
         let res = {
             let mut runtime = self.runtime.lock().unwrap();
 
