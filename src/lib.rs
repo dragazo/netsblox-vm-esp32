@@ -1,6 +1,5 @@
 #![feature(concat_bytes)]
 
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -410,21 +409,13 @@ pub struct RuntimeContext {
     commands: VecDeque<ServerCommand>,
 }
 
-const EXECUTOR_TAKEN: AtomicBool = AtomicBool::new(false);
 pub struct Executor {
     pub storage: Arc<Mutex<StorageController>>,
     pub wifi: Arc<Mutex<Wifi>>,
     pub runtime: Arc<Mutex<RuntimeContext>>,
 }
 impl Executor {
-    pub fn take() -> Result<Option<Self>, EspError> {
-        if EXECUTOR_TAKEN.swap(true, Ordering::Relaxed) {
-            return Ok(None);
-        }
-
-        let modem = unsafe { WifiModem::new() }; // safe because we only do this once (see above)
-        let event_loop = EspSystemEventLoop::take()?;
-        let nvs_partition = EspDefaultNvsPartition::take()?;
+    pub fn new(event_loop: EspSystemEventLoop, nvs_partition: EspDefaultNvsPartition, modem: WifiModem) -> Result<Self, EspError> {
         let storage = Arc::new(Mutex::new(StorageController::new(EspDefaultNvs::new(nvs_partition.clone(), "nb", true)?)?));
         let wifi = Arc::new(Mutex::new(Wifi::new(modem, event_loop, nvs_partition, storage.clone())?));
 
@@ -452,7 +443,7 @@ impl Executor {
             commands: Default::default(),
         }));
 
-        Ok(Some(Executor { storage, wifi, runtime }))
+        Ok(Executor { storage, wifi, runtime })
     }
     pub fn run<C: CustomTypes<EspSystem<C>>>(&self, config: Config<C, EspSystem<C>>) -> ! {
         let client_ip = {
