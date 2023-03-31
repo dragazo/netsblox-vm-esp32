@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use string_ring::{StringRing, Granularity};
 
-use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT};
+use netsblox_vm::template::{ExtensionArgs, SyscallMenu, EMPTY_PROJECT};
 use netsblox_vm::process::ErrorSummary;
 use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
@@ -120,34 +120,15 @@ impl Handler<EspHttpConnection<'_>> for RootHandler {
 }
 
 struct ExtensionHandler {
-    wifi: Arc<Mutex<Wifi>>,
+    extension: String,
 }
 impl Handler<EspHttpConnection<'_>> for ExtensionHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        let ip = match self.wifi.lock().unwrap().client_ip() {
-            Some(x) => x,
-            None => {
-                connection.initiate_response(400, None, &[
-                    ("Access-Control-Allow-Origin", "*"),
-                    ("Content-Type", "text/plain"),
-                ])?;
-                connection.write(b"wifi client is not configured!")?;
-                return Ok(());
-            }
-        };
-
-        let extension = ExtensionArgs {
-            server: &format!("https://{ip}"),
-            syscalls: &[],
-            omitted_elements: &["thumbnail", "pentrails", "history", "replay"],
-            pull_interval: Duration::from_millis(500),
-        }.render();
-
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "application/javascript"),
         ])?;
-        connection.write(extension.as_bytes())?;
+        connection.write(self.extension.as_bytes())?;
         Ok(())
     }
 }
@@ -445,7 +426,7 @@ impl Executor {
 
         Ok(Executor { storage, wifi, runtime })
     }
-    pub fn run<C: CustomTypes<EspSystem<C>>>(&self, config: Config<C, EspSystem<C>>) -> ! {
+    pub fn run<C: CustomTypes<EspSystem<C>>>(&self, config: Config<C, EspSystem<C>>, syscalls: &[SyscallMenu]) -> ! {
         let client_ip = {
             let wifi = self.wifi.lock().unwrap();
             let client_ip = wifi.client_ip();
@@ -482,7 +463,14 @@ impl Executor {
             thread::sleep(Duration::from_secs(1));
         });
 
-        server_handler!("/extension.js": Method::Get => ExtensionHandler { wifi: self.wifi.clone() });
+        let extension = ExtensionArgs {
+            server: &format!("https://{client_ip}"),
+            syscalls,
+            omitted_elements: &["thumbnail", "pentrails", "history", "replay"],
+            pull_interval: Duration::from_millis(500),
+        }.render();
+
+        server_handler!("/extension.js": Method::Get => ExtensionHandler { extension });
         server_handler!("/pull": Method::Post => PullStatusHandler { runtime: self.runtime.clone() });
         server_handler!("/input": Method::Post => InputHandler { runtime: self.runtime.clone() });
         server_handler!("/toggle-paused": Method::Post => TogglePausedHandler { runtime: self.runtime.clone() });
