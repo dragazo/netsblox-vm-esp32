@@ -1,0 +1,11 @@
+[[motors]]
+name = "LeftWheel"
+gpio = [4, 5]
+
+[[motors]]
+name = "RightWheel"
+gpio = [6, 7]
+
+[[motor-groups]]
+name = "Wheels"
+motors = ["LeftWheel", "RightWheel"]
