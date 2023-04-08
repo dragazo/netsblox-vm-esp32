@@ -8,11 +8,9 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
 struct Platform {
-    #[serde(default)]
-    motors: Vec<Motor>,
-
-    #[serde(default)]
-    motor_groups: Vec<MotorGroup>,
+    #[serde(default)] motors: Vec<Motor>,
+    #[serde(default)] motor_groups: Vec<MotorGroup>,
+    #[serde(default)] ultrasonic_distances: Vec<UltrasonicDistance>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -27,6 +25,13 @@ struct Motor {
 struct MotorGroup {
     name: String,
     motors: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
+struct UltrasonicDistance {
+    name: String,
+    gpio: (usize, usize),
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

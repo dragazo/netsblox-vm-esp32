@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
 
+use std::time::Instant;
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::rc::Rc;
@@ -18,6 +19,8 @@ use esp_idf_sys::EspError;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::ledc::{config::TimerConfig, Resolution, SpeedMode, LedcTimerDriver, LedcDriver};
+use esp_idf_hal::gpio::{PinDriver, Pin, Input, Output};
+use esp_idf_hal::delay::Ets;
 
 // -----------------------------------------------------------------
 
@@ -92,6 +95,23 @@ impl MotorController {
     }
 }
 
+struct UltrasonicDistance<TRIGGER: Pin, ECHO: Pin> {
+    trigger: PinDriver<'static, TRIGGER, Output>,
+    echo: PinDriver<'static, ECHO, Input>,
+}
+impl<TRIGGER: Pin, ECHO: Pin> UltrasonicDistance<TRIGGER, ECHO> {
+    fn get_value(&mut self) -> Result<f64, EspError> {
+        self.trigger.set_high()?;
+        Ets::delay_us(10);
+        self.trigger.set_low()?;
+        while self.echo.is_low() {}
+        let start = Instant::now();
+        while self.echo.is_high() {}
+        let duration = start.elapsed().as_micros();
+        Ok(duration as f64 * 0.01715) // half (because round trip) the speed of sound in cm/us
+    }
+}
+
 // -----------------------------------------------------------------
 
 pub struct UnusedPeripherals {
@@ -115,6 +135,13 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     {% set_global ledc_channel = ledc_channel + 2 %}
     {% endfor %}
 
+    {% for ultrasonic in ultrasonic_distances %}
+    let ultrasonic_distance_{{ultrasonic.name}} = RefCell::new(UltrasonicDistance {
+        trigger: PinDriver::output(peripherals.pins.gpio{{ultrasonic.gpio[0]}}).unwrap(),
+        echo: PinDriver::input(peripherals.pins.gpio{{ultrasonic.gpio[1]}}).unwrap(),
+    });
+    {% endfor %}
+
     let config = Config::<C, _> {
         request: Some(Rc::new(move |_, _, key, request, _| match &request {
             Request::Syscall { name, args } => match name.as_str() {
@@ -135,6 +162,17 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
                     RequestStatus::Handled
                 }
                 {% endfor %}
+
+                {% for ultrasonic in ultrasonic_distances %}
+                "distance{{ultrasonic.name}}" => {
+                    match args.as_slice() {
+                        [] => key.complete(Ok(Intermediate::Json(json!(ultrasonic_distance_{{ultrasonic.name}}.borrow_mut().get_value().unwrap())))),
+                        _ => key.complete(Err(format!("distance{{ultrasonic.name}} expected 0 args, got {}", args.len()))),
+                    }
+                    RequestStatus::Handled
+                }
+                {% endfor %}
+
                 _ => RequestStatus::UseDefault { key, request },
             }
             _ => RequestStatus::UseDefault { key, request },
@@ -145,10 +183,21 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     let syscalls = &[
         {% if motor_groups | length > 0 %}
         SyscallMenu::Submenu {
-            label: "motors",
+            label: "Motors",
             content: &[
                 {% for motor_group in motor_groups %}
                 SyscallMenu::Entry { label: "drive{{motor_group.name}}" },
+                {% endfor %}
+            ],
+        },
+        {% endif %}
+
+        {% if ultrasonic_distances | length > 0 %}
+        SyscallMenu::Submenu {
+            label: "UltrasonicDistance",
+            content: &[
+                {% for ultrasonic in ultrasonic_distances %}
+                SyscallMenu::Entry { label: "distance{{ultrasonic.name}}" },
                 {% endfor %}
             ],
         },
