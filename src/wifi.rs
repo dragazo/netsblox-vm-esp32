@@ -53,14 +53,15 @@ impl Wifi {
         self.wifi.set_configuration(&Configuration::Client(Default::default()))?;
         self.wifi.start()?;
 
-        let client_config = match (client_ssid, client_pass) {
+        let client_config = match (client_ssid.as_deref(), client_pass.as_deref()) {
             (Some(ssid), Some(pass)) => {
                 let aps = self.wifi.driver_mut().scan()?;
-                let ap = aps.iter().find(|ap| ap.ssid.as_str() == ssid.as_str());
+                let ap = aps.iter().find(|ap| ap.ssid.as_str() == ssid);
+                println!("access point: {ap:?}");
 
                 Some(ClientConfiguration {
-                    ssid: ssid.as_str().into(),
-                    password: pass.as_str().into(),
+                    ssid: ssid.into(),
+                    password: pass.into(),
                     channel: ap.map(|ap| ap.channel),
                     auth_method: ap.map(|ap| ap.auth_method).unwrap_or(AuthMethod::WPA2Personal),
                     ..Default::default()
@@ -79,7 +80,7 @@ impl Wifi {
             self.wifi.connect()?;
             let wait_for = || self.wifi.is_connected().unwrap() && self.wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0);
             if !EspNetifWait::new::<EspNetif>(self.wifi.sta_netif(), &self.event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
-                println!("wifi client couldn't connect...");
+                println!("wifi client couldn't connect... {:?}", (client_ssid, client_pass));
             }
         }
 

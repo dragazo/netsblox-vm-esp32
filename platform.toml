@@ -12,4 +12,8 @@ motors = ["LeftWheel", "RightWheel"]
 
 [[ultrasonic-distances]]
 name = "Forward"
-gpio = [10, 11]
+gpio = [15, 16]
+
+[[digital-outs]]
+name = "RedLED"
+gpio = 14

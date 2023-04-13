@@ -11,6 +11,7 @@ struct Platform {
     #[serde(default)] motors: Vec<Motor>,
     #[serde(default)] motor_groups: Vec<MotorGroup>,
     #[serde(default)] ultrasonic_distances: Vec<UltrasonicDistance>,
+    #[serde(default)] digital_outs: Vec<DigitalIO>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -32,6 +33,13 @@ struct MotorGroup {
 struct UltrasonicDistance {
     name: String,
     gpio: (usize, usize),
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
+struct DigitalIO {
+    name: String,
+    gpio: usize,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {

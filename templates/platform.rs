@@ -19,7 +19,7 @@ use esp_idf_sys::EspError;
 
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::ledc::{config::TimerConfig, Resolution, SpeedMode, LedcTimerDriver, LedcDriver};
-use esp_idf_hal::gpio::{PinDriver, Pin, Input, Output};
+use esp_idf_hal::gpio::{PinDriver, Pin, Input, Output, Level};
 use esp_idf_hal::delay::Ets;
 
 // -----------------------------------------------------------------
@@ -127,6 +127,11 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     let pwm_timer = Arc::new(LedcTimerDriver::new(peripherals.ledc.timer0, &pwm_timer_config).unwrap());
 
     {% set_global ledc_channel = 0 %}
+
+    {% for out in digital_outs %}
+    let digital_out_{{out.name}} = RefCell::new(PinDriver::output(peripherals.pins.gpio{{out.gpio}}).unwrap());
+    {% endfor %}
+
     {% for motor in motors %}
     let motor_{{motor.name}} = RefCell::new(MotorController {
         positive: LedcDriver::new(peripherals.ledc.channel{{ledc_channel + 0}}, pwm_timer.clone(), peripherals.pins.gpio{{motor.gpio[0]}}).unwrap(),
@@ -145,6 +150,22 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     let config = Config::<C, _> {
         request: Some(Rc::new(move |_, _, key, request, _| match &request {
             Request::Syscall { name, args } => match name.as_str() {
+                {% for out in digital_outs %}
+                "set{{out.name}}" => {
+                    match args.as_slice() {
+                        [x] => match x.to_bool() {
+                            Ok(x) => {
+                                digital_out_{{out.name}}.borrow_mut().set_level(if x { Level::High } else { Level::Low }).unwrap();
+                                key.complete(Ok(Intermediate::Json(json!("OK"))));
+                            }
+                            Err(_) => key.complete(Err(format!("set{{out.name}} expected type bool, got {:?}", x.get_type()))),
+                        }
+                        _ => key.complete(Err(format!("set{{out.name}} expected 1 arg, got {}", args.len()))),
+                    }
+                    RequestStatus::Handled
+                }
+                {% endfor %}
+
                 {% for motor_group in motor_groups %}
                 "drive{{motor_group.name}}" => {
                     match args.as_slice() {
@@ -181,9 +202,20 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     };
 
     let syscalls = &[
+        {% if digital_outs | length > 0 %}
+        SyscallMenu::Submenu {
+            label: "DigitalOut",
+            content: &[
+            {% for out in digital_outs %}
+            SyscallMenu::Entry { label: "set{{out.name}}" },
+            {% endfor %}
+            ],
+        },
+        {% endif %}
+
         {% if motor_groups | length > 0 %}
         SyscallMenu::Submenu {
-            label: "Motors",
+            label: "Motor",
             content: &[
                 {% for motor_group in motor_groups %}
                 SyscallMenu::Entry { label: "drive{{motor_group.name}}" },
