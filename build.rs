@@ -12,6 +12,7 @@ struct Platform {
     #[serde(default)] motor_groups: Vec<MotorGroup>,
     #[serde(default)] ultrasonic_distances: Vec<UltrasonicDistance>,
     #[serde(default)] digital_outs: Vec<DigitalIO>,
+    #[serde(default)] digital_ins: Vec<DigitalIO>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

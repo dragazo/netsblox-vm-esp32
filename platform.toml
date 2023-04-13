@@ -17,3 +17,7 @@ gpio = [15, 16]
 [[digital-outs]]
 name = "RedLED"
 gpio = 14
+
+[[digital-ins]]
+name = "Button"
+gpio = 13

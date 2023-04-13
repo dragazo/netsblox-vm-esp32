@@ -128,8 +128,12 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
 
     {% set_global ledc_channel = 0 %}
 
-    {% for out in digital_outs %}
-    let digital_out_{{out.name}} = RefCell::new(PinDriver::output(peripherals.pins.gpio{{out.gpio}}).unwrap());
+    {% for output in digital_outs %}
+    let digital_out_{{output.name}} = RefCell::new(PinDriver::output(peripherals.pins.gpio{{output.gpio}}).unwrap());
+    {% endfor %}
+
+    {% for input in digital_ins %}
+    let digital_in_{{input.name}} = RefCell::new(PinDriver::input(peripherals.pins.gpio{{input.gpio}}).unwrap());
     {% endfor %}
 
     {% for motor in motors %}
@@ -150,17 +154,27 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     let config = Config::<C, _> {
         request: Some(Rc::new(move |_, _, key, request, _| match &request {
             Request::Syscall { name, args } => match name.as_str() {
-                {% for out in digital_outs %}
-                "set{{out.name}}" => {
+                {% for output in digital_outs %}
+                "set{{output.name}}" => {
                     match args.as_slice() {
                         [x] => match x.to_bool() {
                             Ok(x) => {
-                                digital_out_{{out.name}}.borrow_mut().set_level(if x { Level::High } else { Level::Low }).unwrap();
+                                digital_out_{{output.name}}.borrow_mut().set_level(if x { Level::High } else { Level::Low }).unwrap();
                                 key.complete(Ok(Intermediate::Json(json!("OK"))));
                             }
-                            Err(_) => key.complete(Err(format!("set{{out.name}} expected type bool, got {:?}", x.get_type()))),
+                            Err(_) => key.complete(Err(format!("set{{output.name}} expected type bool, got {:?}", x.get_type()))),
                         }
-                        _ => key.complete(Err(format!("set{{out.name}} expected 1 arg, got {}", args.len()))),
+                        _ => key.complete(Err(format!("set{{output.name}} expected 1 arg, got {}", args.len()))),
+                    }
+                    RequestStatus::Handled
+                }
+                {% endfor %}
+
+                {% for input in digital_ins %}
+                "get{{input.name}}" => {
+                    match args.as_slice() {
+                        [] => key.complete(Ok(Intermediate::Json(json!(digital_in_{{input.name}}.borrow_mut().is_low())))),
+                        _ => key.complete(Err(format!("get{{input.name}} expected 0 args, got {}", args.len()))),
                     }
                     RequestStatus::Handled
                 }
@@ -206,9 +220,20 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
         SyscallMenu::Submenu {
             label: "DigitalOut",
             content: &[
-            {% for out in digital_outs %}
-            SyscallMenu::Entry { label: "set{{out.name}}" },
-            {% endfor %}
+                {% for output in digital_outs %}
+                SyscallMenu::Entry { label: "set{{output.name}}" },
+                {% endfor %}
+            ],
+        },
+        {% endif %}
+
+        {% if digital_ins | length > 0 %}
+        SyscallMenu::Submenu {
+            label: "DigitalIn",
+            content: &[
+                {% for input in digital_ins %}
+                SyscallMenu::Entry { label: "get{{input.name}}" },
+                {% endfor %}
             ],
         },
         {% endif %}
