@@ -455,9 +455,14 @@ impl Executor {
             }}
         }
 
+        let server_addr = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
+
         let root_content = include_str!("www/index.html")
-            .replace("%%%AP_IP%%%", &format!("{ap_ip}"))
-            .replace("%%%STA_IP%%%", client_ip.map(|x| x.to_string()).as_deref().unwrap_or("Not Connected"));
+            .replace("%%%AP_INFO%%%", &format!("<p>IP: {ap_ip}</p>"))
+            .replace("%%%CLIENT_INFO%%%", &match client_ip {
+                Some(client_ip) => format!("<p>IP: {client_ip}</p><p><a target='_blank' href='{server_addr}?extensions=[\"https://{client_ip}/extension.js\"]'>Open Editor</a></p>"),
+                None => "<p>Not Connected</p>".into(),
+            });
 
         server_handler!("/": Method::Get => RootHandler { content: root_content });
         server_handler!("/wipe": Method::Post => WipeHandler { storage: self.storage.clone() });
@@ -484,8 +489,6 @@ impl Executor {
             Method::Get => GetProjectHandler { storage: self.storage.clone() },
             Method::Post => SetProjectHandler { runtime: self.runtime.clone() },
         );
-
-        let server_addr = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
 
         println!("running: {server_addr}?extensions=[\"https://{client_ip}/extension.js\"]");
 

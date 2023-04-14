@@ -17,7 +17,7 @@ function sendCommand(method, path, body = null) {
         if (xhr.readyState !== XMLHttpRequest.DONE) return;
         alert(xhr.responseText);
     };
-    xhr.open(method, `${location.protocol}//${location.host}${path}`);
+    xhr.open(method, path);
     xhr.send(typeof(body) === 'object' ? JSON.stringify(body) : body);
 }
 
@@ -42,7 +42,7 @@ function wipe() {
 <h1>Control Panel</h1>
 
 <h2>Wifi Access Point</h2>
-<p>IP: %%%AP_IP%%%</P>
+%%%AP_INFO%%%
 <div style="text-align: right; display: inline-block">
     SSID: <input type="text" id="wifi-ap-ssid"><br>
     Password: <input type="password" id="wifi-ap-pass"><br>
@@ -50,7 +50,7 @@ function wipe() {
 </div>
 
 <h2>Wifi Client</h2>
-<p>IP: %%%STA_IP%%%</p>
+%%%CLIENT_INFO%%%
 <div style="text-align: right; display: inline-block">
     SSID: <input type="text" id="wifi-client-ssid"><br>
     Password: <input type="password" id="wifi-client-pass"><br>
