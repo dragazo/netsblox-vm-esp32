@@ -62,9 +62,12 @@ impl Wifi {
                 Some(ClientConfiguration {
                     ssid: ssid.into(),
                     password: pass.into(),
+                    bssid: ap.map(|ap| ap.bssid),
                     channel: ap.map(|ap| ap.channel),
-                    auth_method: ap.map(|ap| ap.auth_method).unwrap_or(AuthMethod::WPA2Personal),
-                    ..Default::default()
+                    auth_method: match ap.map(|ap| ap.auth_method).unwrap_or(AuthMethod::WPA2Personal) {
+                        AuthMethod::WPAWPA2Personal => AuthMethod::WPA2Personal, // WPAWPA2Personal is broken for some reason
+                        x => x,
+                    },
                 })
             }
             (_, _) => None,
