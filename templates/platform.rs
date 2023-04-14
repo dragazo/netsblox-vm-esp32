@@ -5,9 +5,6 @@ use std::cell::RefCell;
 use std::sync::Arc;
 use std::rc::Rc;
 
-use esp_idf_hal::units::FromValueType;
-use esp_idf_hal::modem::Modem;
-
 use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ErrorCause, Config, Request, RequestStatus, Number};
 use netsblox_vm::json::{Json, json};
 use netsblox_vm::runtime::{CustomTypes, IntermediateType, Key};
@@ -17,10 +14,15 @@ use netsblox_vm_esp32::system::EspSystem;
 
 use esp_idf_sys::EspError;
 
+use esp_idf_hal::units::FromValueType;
+use esp_idf_hal::modem::Modem;
 use esp_idf_hal::peripherals::Peripherals;
 use esp_idf_hal::ledc::{config::TimerConfig, Resolution, SpeedMode, LedcTimerDriver, LedcDriver};
 use esp_idf_hal::gpio::{PinDriver, Pin, Input, Output, Level};
 use esp_idf_hal::delay::Ets;
+use esp_idf_hal::i2c::I2cDriver;
+
+use embedded_hal::blocking::i2c::{AddressMode as I2cAddressMode, Write as I2cWrite, Read as I2cRead, WriteRead as I2cWriteRead};
 
 // -----------------------------------------------------------------
 
@@ -68,6 +70,38 @@ impl CustomTypes<EspSystem<Self>> for C {
             Intermediate::Json(x) => Value::from_json(mc, x)?,
             Intermediate::Image(x) => Value::Image(Rc::new(x)),
         })
+    }
+}
+
+// -----------------------------------------------------------------
+
+struct SharedI2c<T>(Rc<RefCell<T>>);
+impl<T> SharedI2c<T> {
+    fn new(i2c: T) -> Self {
+        Self(Rc::new(RefCell::new(i2c)))
+    }
+}
+impl<T> Clone for SharedI2c<T> {
+    fn clone(&self) -> Self {
+        Self(self.0.clone())
+    }
+}
+impl<T: I2cRead<A>, A: I2cAddressMode> I2cRead<A> for SharedI2c<T> {
+    type Error = T::Error;
+    fn read(&mut self, address: A, buffer: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().read(address, buffer)
+    }
+}
+impl<T: I2cWrite<A>, A: I2cAddressMode> I2cWrite<A> for SharedI2c<T> {
+    type Error = T::Error;
+    fn write(&mut self, address: A, bytes: &[u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().write(address, bytes)
+    }
+}
+impl<T: I2cWriteRead<A>, A: I2cAddressMode> I2cWriteRead<A> for SharedI2c<T> {
+    type Error = T::Error;
+    fn write_read(&mut self, address: A, bytes: &[u8], buffer: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().write_read(address, bytes, buffer)
     }
 }
 
@@ -126,6 +160,10 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     };
     let pwm_timer = Arc::new(LedcTimerDriver::new(peripherals.ledc.timer0, &pwm_timer_config).unwrap());
 
+    {% if i2c %}
+    let i2c = SharedI2c::new(I2cDriver::new(peripherals.i2c0, peripherals.pins.gpio{{i2c.gpio[0]}}, peripherals.pins.gpio{{i2c.gpio[1]}}, &Default::default()).unwrap());
+    {% endif %}
+
     {% set_global ledc_channel = 0 %}
 
     {% for output in digital_outs %}
@@ -151,38 +189,36 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     });
     {% endfor %}
 
+    {% for sensor in max30205s %}
+    let max30205_{{sensor.name}} = RefCell::new(max30205::MAX30205::new({{sensor.i2c_addr}}, i2c.clone()).unwrap());
+    {% endfor %}
+
     let config = Config::<C, _> {
         request: Some(Rc::new(move |_, _, key, request, _| match &request {
-            Request::Syscall { name, args } => match name.as_str() {
-                {% for output in digital_outs %}
-                "set{{output.name}}" => {
-                    match args.as_slice() {
+            Request::Syscall { name, args } => {
+                match name.as_str() {
+                    {% for input in digital_ins %}
+                    "get{{input.name}}" => match args.as_slice() {
+                        [] => key.complete(Ok(Intermediate::Json(json!(digital_in_{{input.name}}.borrow_mut().is_high() ^ {{input.negated}})))),
+                        _ => key.complete(Err(format!("get{{input.name}} expected 0 args, got {}", args.len()))),
+                    }
+                    {% endfor %}
+
+                    {% for output in digital_outs %}
+                    "set{{output.name}}" => match args.as_slice() {
                         [x] => match x.to_bool() {
                             Ok(x) => {
-                                digital_out_{{output.name}}.borrow_mut().set_level(if x { Level::High } else { Level::Low }).unwrap();
+                                digital_out_{{output.name}}.borrow_mut().set_level(if x ^ {{output.negated}} { Level::High } else { Level::Low }).unwrap();
                                 key.complete(Ok(Intermediate::Json(json!("OK"))));
                             }
                             Err(_) => key.complete(Err(format!("set{{output.name}} expected type bool, got {:?}", x.get_type()))),
                         }
                         _ => key.complete(Err(format!("set{{output.name}} expected 1 arg, got {}", args.len()))),
                     }
-                    RequestStatus::Handled
-                }
-                {% endfor %}
+                    {% endfor %}
 
-                {% for input in digital_ins %}
-                "get{{input.name}}" => {
-                    match args.as_slice() {
-                        [] => key.complete(Ok(Intermediate::Json(json!(digital_in_{{input.name}}.borrow_mut().is_low())))),
-                        _ => key.complete(Err(format!("get{{input.name}} expected 0 args, got {}", args.len()))),
-                    }
-                    RequestStatus::Handled
-                }
-                {% endfor %}
-
-                {% for motor_group in motor_groups %}
-                "drive{{motor_group.name}}" => {
-                    match args.as_slice() {
+                    {% for motor_group in motor_groups %}
+                    "drive{{motor_group.name}}" => match args.as_slice() {
                         [{% for motor in motor_group.motors %}x_{{motor}},{% endfor %}] => match ({% for motor in motor_group.motors %}x_{{motor}}.to_number(),{% endfor %}) {
                             ({% for motor in motor_group.motors %}Ok(x_{{motor}}),{% endfor %}) => {
                                 {% for motor in motor_group.motors %}
@@ -194,21 +230,25 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
                         }
                         _ => key.complete(Err(format!("drive{{motor_group.name}} expected {{motor_group.motors|length}} args, got {}", args.len()))),
                     }
-                    RequestStatus::Handled
-                }
-                {% endfor %}
+                    {% endfor %}
 
-                {% for ultrasonic in ultrasonic_distances %}
-                "distance{{ultrasonic.name}}" => {
-                    match args.as_slice() {
-                        [] => key.complete(Ok(Intermediate::Json(json!(ultrasonic_distance_{{ultrasonic.name}}.borrow_mut().get_value().unwrap())))),
-                        _ => key.complete(Err(format!("distance{{ultrasonic.name}} expected 0 args, got {}", args.len()))),
+                    {% for sensor in ultrasonic_distances %}
+                    "getDistance{{sensor.name}}" => match args.as_slice() {
+                        [] => key.complete(Ok(Intermediate::Json(json!(ultrasonic_distance_{{sensor.name}}.borrow_mut().get_value().unwrap())))),
+                        _ => key.complete(Err(format!("getDistance{{sensor.name}} expected 0 args, got {}", args.len()))),
                     }
-                    RequestStatus::Handled
-                }
-                {% endfor %}
+                    {% endfor %}
 
-                _ => RequestStatus::UseDefault { key, request },
+                    {% for sensor in max30205s %}
+                    "getTemperature{{sensor.name}}" => match args.as_slice() {
+                        [] => key.complete(Ok(Intermediate::Json(json!(max30205_{{sensor.name}}.borrow_mut().get_temperature().unwrap())))),
+                        _ => key.complete(Err(format!("getTemperature{{sensor.name}} expected 0 args, got {}", args.len()))),
+                    }
+                    {% endfor %}
+
+                    _ => return RequestStatus::UseDefault { key, request },
+                }
+                RequestStatus::Handled
             }
             _ => RequestStatus::UseDefault { key, request },
         })),
@@ -216,10 +256,14 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
     };
 
     let syscalls = &[
-        {% if digital_outs | length > 0 %}
+        {% if digital_outs or digital_ins %}
         SyscallMenu::Submenu {
-            label: "DigitalOut",
+            label: "DigitalIO",
             content: &[
+                {% for input in digital_ins %}
+                SyscallMenu::Entry { label: "get{{input.name}}" },
+                {% endfor %}
+
                 {% for output in digital_outs %}
                 SyscallMenu::Entry { label: "set{{output.name}}" },
                 {% endfor %}
@@ -227,18 +271,7 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
         },
         {% endif %}
 
-        {% if digital_ins | length > 0 %}
-        SyscallMenu::Submenu {
-            label: "DigitalIn",
-            content: &[
-                {% for input in digital_ins %}
-                SyscallMenu::Entry { label: "get{{input.name}}" },
-                {% endfor %}
-            ],
-        },
-        {% endif %}
-
-        {% if motor_groups | length > 0 %}
+        {% if motor_groups %}
         SyscallMenu::Submenu {
             label: "Motor",
             content: &[
@@ -249,12 +282,23 @@ pub fn get_config(peripherals: Peripherals) -> (UnusedPeripherals, Config<C, Esp
         },
         {% endif %}
 
-        {% if ultrasonic_distances | length > 0 %}
+        {% if ultrasonic_distances %}
         SyscallMenu::Submenu {
-            label: "UltrasonicDistance",
+            label: "Distance",
             content: &[
-                {% for ultrasonic in ultrasonic_distances %}
-                SyscallMenu::Entry { label: "distance{{ultrasonic.name}}" },
+                {% for sensor in ultrasonic_distances %}
+                SyscallMenu::Entry { label: "getDistance{{sensor.name}}" },
+                {% endfor %}
+            ],
+        },
+        {% endif %}
+
+        {% if max30205s %}
+        SyscallMenu::Submenu {
+            label: "Temperature",
+            content: &[
+                {%for sensor in max30205s %}
+                SyscallMenu::Entry { label: "getTemperature{{sensor.name}}" },
                 {% endfor %}
             ],
         },

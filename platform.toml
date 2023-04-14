@@ -1,3 +1,6 @@
+[i2c]
+gpio = [17, 18]
+
 [[motors]]
 name = "LeftWheel"
 gpio = [4, 5]
@@ -15,9 +18,14 @@ name = "Forward"
 gpio = [15, 16]
 
 [[digital-outs]]
-name = "RedLED"
+name = "RedLedOn"
 gpio = 14
 
 [[digital-ins]]
-name = "Button"
+name = "ButtonPressed"
 gpio = 13
+negated = true
+
+[[max30205s]]
+name = "Probe"
+i2c-addr = 73

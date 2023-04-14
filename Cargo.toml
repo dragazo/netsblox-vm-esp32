@@ -27,6 +27,8 @@ overflow-checks = false
 pio = ["esp-idf-sys/pio"]
 
 [dependencies]
+
+# core deps
 netsblox-vm = { git = "https://github.com/dragazo/netsblox-vm", default-features = false, features = ["serde"] }
 gc-arena = { git = "https://github.com/kyren/gc-arena", default-features = false }
 esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
@@ -39,6 +41,10 @@ rand_chacha = { version = "0.3.1" }
 getrandom = { version = "0.2.8" }
 uuid = { version = "1.3.0", default-features = false, features = ["v4", "fast-rng"] }
 string-ring = { version = "0.1.1", default-features = false }
+
+# peripheral deps
+embedded-hal = "0.2.7"
+max30205 = { version = "0.1.1", default-features = false }
 
 [build-dependencies]
 serde = { version = "1.0", features = ["derive"] }

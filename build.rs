@@ -8,11 +8,19 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
 struct Platform {
+    #[serde(default)] i2c: Option<I2c>,
     #[serde(default)] motors: Vec<Motor>,
     #[serde(default)] motor_groups: Vec<MotorGroup>,
     #[serde(default)] ultrasonic_distances: Vec<UltrasonicDistance>,
     #[serde(default)] digital_outs: Vec<DigitalIO>,
     #[serde(default)] digital_ins: Vec<DigitalIO>,
+    #[serde(default)] max30205s: Vec<BasicI2c>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
+struct I2c {
+    gpio: (usize, usize),
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -39,8 +47,16 @@ struct UltrasonicDistance {
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
 struct DigitalIO {
+                      name: String,
+                      gpio: usize,
+    #[serde(default)] negated: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, rename_all(deserialize = "kebab-case"))]
+struct BasicI2c {
     name: String,
-    gpio: usize,
+    i2c_addr: u8,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
