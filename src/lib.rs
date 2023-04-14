@@ -107,14 +107,16 @@ impl Handler<EspHttpConnection<'_>> for CorsOptionsHandler {
     }
 }
 
-struct RootHandler;
+struct RootHandler {
+    content: String,
+}
 impl Handler<EspHttpConnection<'_>> for RootHandler {
     fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "text/html"),
         ])?;
-        connection.write(include_str!("www/index.html").as_bytes())?;
+        connection.write(self.content.as_bytes())?;
         Ok(())
     }
 }
@@ -427,12 +429,12 @@ impl Executor {
         Ok(Executor { storage, wifi, runtime })
     }
     pub fn run<C: CustomTypes<EspSystem<C>>>(&self, config: Config<C, EspSystem<C>>, syscalls: &[SyscallMenu]) -> ! {
-        let client_ip = {
+        let (ap_ip, client_ip) = {
             let wifi = self.wifi.lock().unwrap();
-            let client_ip = wifi.client_ip();
-            println!("wifi client ip: {:?}", client_ip);
-            println!("wifi server ip: {:?}", wifi.server_ip());
-            client_ip
+            let (ap_ip, client_ip) = (wifi.server_ip(), wifi.client_ip());
+            println!("wifi client ip: {client_ip:?}");
+            println!("wifi server ip: {ap_ip:?}");
+            (ap_ip, client_ip)
         };
 
         macro_rules! parse_x509 {
@@ -453,7 +455,11 @@ impl Executor {
             }}
         }
 
-        server_handler!("/": Method::Get => RootHandler);
+        let root_content = include_str!("www/index.html")
+            .replace("%%%AP_IP%%%", &format!("{ap_ip}"))
+            .replace("%%%STA_IP%%%", client_ip.map(|x| x.to_string()).as_deref().unwrap_or("Not Connected"));
+
+        server_handler!("/": Method::Get => RootHandler { content: root_content });
         server_handler!("/wipe": Method::Post => WipeHandler { storage: self.storage.clone() });
         server_handler!("/wifi": Method::Post => WifiConfigHandler { storage: self.storage.clone() });
         server_handler!("/server": Method::Post => ServerHandler { storage: self.storage.clone() });
