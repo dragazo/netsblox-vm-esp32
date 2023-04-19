@@ -94,6 +94,8 @@ impl StorageController {
 
         netsblox_server (nbserver): String,
 
+        peripherals (periph): String,
+
         project (proj): String,
     }
 }

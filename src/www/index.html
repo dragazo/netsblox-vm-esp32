@@ -11,11 +11,11 @@ body {
 </style>
 
 <script>
-function sendCommand(method, path, body = null) {
+function sendCommand(method, path, body = null, onResponse = alert) {
     const xhr = new XMLHttpRequest();
     xhr.onreadystatechange = () => {
         if (xhr.readyState !== XMLHttpRequest.DONE) return;
-        alert(xhr.responseText);
+        onResponse(xhr.responseText);
     };
     xhr.open(method, path);
     xhr.send(typeof(body) === 'object' ? JSON.stringify(body) : body);
@@ -34,6 +34,16 @@ function wifiClient() {
 function wipe() {
     sendCommand('POST', '/wipe');
 }
+function peripherals() {
+    const config = document.getElementById('peripherals-config').value;
+    sendCommand('POST', '/peripherals', config);
+}
+
+window.onload = () => {
+    sendCommand('GET', '/peripherals', null, x => {
+        document.getElementById('peripherals-config').value = x;
+    });
+};
 </script>
 
 </head>
@@ -56,6 +66,11 @@ function wipe() {
     Password: <input type="password" id="wifi-client-pass"><br>
     <button onclick="wifiClient()">Connect</button>
 </div>
+
+<h2>Peripherals</h2>
+%%%PERIPH_INFO%%%
+<textarea id="peripherals-config" rows="10" cols = "50"></textarea><br>
+<button onclick="peripherals()">Upload Peripherals Config</button>
 
 <h2>Factory Reset</h2>
 <button onclick="wipe()">Wipe Device</button>

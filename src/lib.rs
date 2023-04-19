@@ -39,6 +39,7 @@ pub mod storage;
 pub mod system;
 pub mod wifi;
 pub mod http;
+pub mod platform;
 mod meta;
 
 use crate::storage::*;
@@ -49,8 +50,8 @@ const YIELDS_BEFORE_IDLE_SLEEP: usize = 256;
 const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1ms precision (minimum value before no-op)
 
 // max size of output and error (circular) buffers between status polls
-const OUTPUT_BUFFER_SIZE: usize = 64 * 1024;
-const ERROR_BUFFER_SIZE: usize = 64 * 1024;
+const OUTPUT_BUFFER_SIZE: usize = 32 * 1024;
+const ERROR_BUFFER_SIZE: usize = 32 * 1024;
 
 #[derive(Collect)]
 #[collect(no_drop, bound = "")]
@@ -215,6 +216,51 @@ impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
             ("Content-Type", "text/plain"),
         ])?;
         connection.write(b"loaded project")?;
+        Ok(())
+    }
+}
+
+struct GetPeripheralsHandler {
+    storage: Arc<Mutex<StorageController>>,
+}
+impl Handler<EspHttpConnection<'_>> for GetPeripheralsHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let peripherals = self.storage.lock().unwrap().peripherals().get()?;
+        let peripherals = peripherals.as_deref().unwrap_or("{}");
+
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "application/json"),
+        ])?;
+        connection.write(peripherals.as_bytes())?;
+        Ok(())
+    }
+}
+
+struct SetPeripheralsHandler {
+    storage: Arc<Mutex<StorageController>>,
+}
+impl Handler<EspHttpConnection<'_>> for SetPeripheralsHandler {
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+        let content = match String::from_utf8(read_all(connection)?) {
+            Ok(x) => x,
+            Err(_) => {
+                connection.initiate_response(400, None, &[
+                    ("Access-Control-Allow-Origin", "*"),
+                    ("Content-Type", "text/plain"),
+                ])?;
+                connection.write(b"failed to parse request body")?;
+                return Ok(());
+            }
+        };
+
+        self.storage.lock().unwrap().peripherals().set(&content)?;
+
+        connection.initiate_response(200, None, &[
+            ("Access-Control-Allow-Origin", "*"),
+            ("Content-Type", "text/plain"),
+        ])?;
+        connection.write(b"successfully updated peripherals config... restart the board to apply changes...")?;
         Ok(())
     }
 }
@@ -428,7 +474,32 @@ impl Executor {
 
         Ok(Executor { storage, wifi, runtime })
     }
-    pub fn run<C: CustomTypes<EspSystem<C>>>(&self, config: Config<C, EspSystem<C>>, syscalls: &[SyscallMenu]) -> ! {
+    pub fn run(&self, peripherals: platform::SyscallPeripherals) -> ! {
+        let (config, syscalls, peripherals_status_html) = {
+            let mut peripherals_status_html = String::new();
+            let peripherals_config = match self.storage.lock().unwrap().peripherals().get().unwrap() {
+                Some(x) => match netsblox_vm::json::parse_json(&x) {
+                    Ok(x) => x,
+                    Err(e) => {
+                        write!(peripherals_status_html, "<p>failed to parse peripherals config: {e:?}</p>").unwrap();
+                        Default::default()
+                    }
+                }
+                None => Default::default(),
+            };
+            let (config, syscalls) = match platform::bind_syscalls(peripherals, &peripherals_config) {
+                Ok(x) => x,
+                Err(e) => {
+                    write!(peripherals_status_html, "<p>failed to initialize peripherals: {e:?}</p>").unwrap();
+                    Default::default()
+                }
+            };
+            if peripherals_status_html.is_empty() {
+                peripherals_status_html.push_str("<p>successfully loaded peripherals</p>");
+            }
+            (config, syscalls, peripherals_status_html)
+        };
+
         let (ap_ip, client_ip) = {
             let wifi = self.wifi.lock().unwrap();
             let (ap_ip, client_ip) = (wifi.server_ip(), wifi.client_ip());
@@ -462,7 +533,9 @@ impl Executor {
             .replace("%%%CLIENT_INFO%%%", &match client_ip {
                 Some(client_ip) => format!("<p>IP: {client_ip}</p><p><a target='_blank' href='{server_addr}?extensions=[\"https://{client_ip}/extension.js\"]'>Open Editor</a></p>"),
                 None => "<p>Not Connected</p>".into(),
-            });
+            })
+            .replace("%%%PERIPH_INFO%%%", &peripherals_status_html);
+        drop(peripherals_status_html);
 
         server_handler!("/": Method::Get => RootHandler { content: root_content });
         server_handler!("/wipe": Method::Post => WipeHandler { storage: self.storage.clone() });
@@ -476,10 +549,11 @@ impl Executor {
 
         let extension = ExtensionArgs {
             server: &format!("https://{client_ip}"),
-            syscalls,
+            syscalls: &syscalls,
             omitted_elements: &["thumbnail", "pentrails", "history", "replay"],
             pull_interval: Duration::from_millis(500),
         }.render();
+        drop(syscalls);
 
         server_handler!("/extension.js": Method::Get => ExtensionHandler { extension });
         server_handler!("/pull": Method::Post => PullStatusHandler { runtime: self.runtime.clone() });
@@ -488,6 +562,10 @@ impl Executor {
         server_handler!("/project":
             Method::Get => GetProjectHandler { storage: self.storage.clone() },
             Method::Post => SetProjectHandler { runtime: self.runtime.clone() },
+        );
+        server_handler!("/peripherals":
+            Method::Get => GetPeripheralsHandler { storage: self.storage.clone() },
+            Method::Post => SetPeripheralsHandler { storage: self.storage.clone() },
         );
 
         println!("running: {server_addr}?extensions=[\"https://{client_ip}/extension.js\"]");
@@ -517,7 +595,7 @@ impl Executor {
             request: None,
         });
 
-        let system = Rc::new(EspSystem::<C>::new(server_addr, Some("project"), config));
+        let system = Rc::new(EspSystem::<platform::C>::new(server_addr, Some("project"), config));
 
         let mut running_env = {
             let role = {

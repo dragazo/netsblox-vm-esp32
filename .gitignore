@@ -3,6 +3,5 @@
 /target
 /Cargo.lock
 src/meta.rs
-src/platform.rs
 *.xml
 *.pem

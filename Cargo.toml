@@ -32,14 +32,16 @@ pio = ["esp-idf-sys/pio"]
 netsblox-vm = { git = "https://github.com/dragazo/netsblox-vm", default-features = false, features = ["serde"] }
 gc-arena = { git = "https://github.com/kyren/gc-arena", default-features = false }
 esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
-esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc", features = ["experimental"] }
+# esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc", features = ["experimental"] }
+esp-idf-svc = { git = "https://github.com/dragazo/esp-idf-svc", features = ["experimental"] }
 embedded-svc = { version = "0.24.0", feature = ["experimental"] }
-esp-idf-hal = "0.40.1"
+esp-idf-hal = { git = "https://github.com/dragazo/esp-idf-hal" }
+# esp-idf-hal = "0.40.1"
 serde = { version = "1.0", features = ["derive"], default-features = false }
 rand = { version = "0.8.5", default-features = false }
 rand_chacha = { version = "0.3.1" }
-getrandom = { version = "0.2.8" }
-uuid = { version = "1.3.0", default-features = false, features = ["v4", "fast-rng"] }
+getrandom = { version = "0.2.9" }
+uuid = { version = "1.3.1", default-features = false, features = ["v4", "fast-rng"] }
 string-ring = { version = "0.1.1", default-features = false }
 
 # peripheral deps
@@ -47,8 +49,5 @@ embedded-hal = "0.2.7"
 max30205 = { version = "0.1.1", default-features = false }
 
 [build-dependencies]
-serde = { version = "1.0", features = ["derive"] }
 embuild = "0.31"
 names = "0.14.0"
-toml = "0.7.3"
-tera = "1.18.1"
