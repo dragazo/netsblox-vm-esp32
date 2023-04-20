@@ -3,6 +3,7 @@ use std::time::Instant;
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::rc::Rc;
+use std::iter;
 
 use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ErrorCause, Config, Request, RequestStatus};
 use netsblox_vm::json::{Json, json};
@@ -26,12 +27,10 @@ use crate::system::EspSystem;
 // -----------------------------------------------------------------
 
 struct PeripheralHandles {
-    i2c: Option<SharedI2c<I2cDriver<'static>>>,
-
     digital_ins: BTreeMap<String, DigitalInController>,
     digital_outs: BTreeMap<String, DigitalOutController>,
 
-    motors: BTreeMap<String, MotorController>,
+    motor_groups: BTreeMap<String, Vec<Rc<RefCell<MotorController>>>>,
 
     hcsr04s: BTreeMap<String, HCSR04Controller>,
     max30205s: BTreeMap<String, max30205::MAX30205<SharedI2c<I2cDriver<'static>>>>,
@@ -384,7 +383,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         ($peripheral_type:literal, $peripheral:expr => $($function:literal),+$(,)?) => {{
             let peripheral = &$peripheral;
             SyscallMenu::Submenu {
-                label: peripheral.clone(),
+                label: peripheral.to_string(),
                 content: vec![$(
                     SyscallMenu::Entry { label: $function.into(), value: format!(concat!($peripheral_type, ".{}.", $function), peripheral) },
                 )+],
@@ -394,7 +393,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
 
     let digital_ins = {
         let mut res = BTreeMap::new();
-        let mut menu_content = vec![];
+        let mut menu_content = Vec::with_capacity(peripherals_config.digital_ins.len());
 
         for entry in peripherals_config.digital_ins.iter() {
             let pin = PinDriver::input(pins.take_convert(entry.gpio, AnyPin::try_into_input)?)?;
@@ -412,7 +411,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
 
     let digital_outs = {
         let mut res = BTreeMap::new();
-        let mut menu_content = vec![];
+        let mut menu_content = Vec::with_capacity(peripherals_config.digital_outs.len());
 
         for entry in peripherals_config.digital_outs.iter() {
             let pin = PinDriver::output(pins.take_convert(entry.gpio, AnyPin::try_into_output)?)?;
@@ -428,15 +427,42 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         res
     };
 
-    let motors = {
+    let motor_groups = {
+        let mut motors = BTreeMap::new();
         let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.motors.len());
+
+        let make_menu_entries = |name: &str| menu_entries!("Motor", name => "setPower");
+
         for entry in peripherals_config.motors.iter() {
             let positive = pwms.take(pins.take_convert(entry.gpio_pos, AnyPin::try_into_output)?)?;
             let negative = pwms.take(pins.take_convert(entry.gpio_neg, AnyPin::try_into_output)?)?;
-            if res.insert(entry.name.clone(), MotorController { positive, negative }).is_some() {
+            let motor = Rc::new(RefCell::new(MotorController { positive, negative }));
+            if motors.insert(entry.name.clone(), motor.clone()).is_some() {
                 return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
             }
+            if res.insert(entry.name.clone(), vec![motor]).is_some() {
+                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            }
+            menu_content.push(make_menu_entries(&entry.name));
         }
+        for entry in peripherals_config.motor_groups.iter() {
+            let mut motor_group = Vec::with_capacity(entry.motors.len());
+            for name in entry.motors.iter() {
+                match motors.get(name) {
+                    Some(x) => motor_group.push(x.clone()),
+                    None => return Err(PeripheralError::NameUnknown { name: name.clone() }),
+                }
+            }
+            if res.insert(entry.name.clone(), motor_group).is_some() {
+                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            }
+            menu_content.push(make_menu_entries(&entry.name));
+        }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "Motor".into(), content: menu_content });
+        }
+
         res
     };
 
@@ -465,7 +491,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         res
     };
 
-    let peripheral_handles = RefCell::new(PeripheralHandles { i2c, digital_ins, digital_outs, motors, hcsr04s, max30205s });
+    let peripheral_handles = RefCell::new(PeripheralHandles { digital_ins, digital_outs, motor_groups, hcsr04s, max30205s });
 
     let config = Config::<C, _> {
         request: Some(Rc::new(move |_, _, key, request, _| match &request {
@@ -481,21 +507,29 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                 macro_rules! unknown {
                     ($id:ident) => { key.complete(Err(format!(concat!("unknown {} ", stringify!($id), ": {:?}"), peripheral_type, $id))) }
                 }
-                macro_rules! count_tts {
-                    () => { 0usize };
-                    ($_:tt $($tail:tt)*) => { 1usize + count_tts!($($tail)*) };
+                macro_rules! ok {
+                    () => { key.complete(Ok(Intermediate::Json(json!("OK")))); }
                 }
-                macro_rules! parse_args {
-                    ($($t:ident),*$(,)?) => {{
-                        let expected = count_tts!($($t)*);
-                        if args.len() != expected {
-                            key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected {expected} args, but got {}", args.len())));
-                            return RequestStatus::Handled;
+
+                macro_rules! count_expected {
+                    () => { 0usize };
+                    ($_:ident $($rest:tt)*) => { 1usize + count_expected!($($rest)*) };
+                    ([$_:ident ; $n:expr] $($rest:tt)*) => { $n + count_expected!($($rest)*) };
+                }
+                macro_rules! parse_args_inner {
+                    (($index:expr) $first:ident $($rest:tt)+) => {
+                        (parse_args_inner!($index $first), parse_args_inner!(($index + 1usize) $($rest)+))
+                    };
+                    (($index:expr) [$first:ident ; $n:expr]) => {{
+                        let index = $index;
+                        let n = $n;
+                        let mut res = Vec::with_capacity(n);
+                        for i in 0..n {
+                            res.push(parse_args_inner!((index + i) $first));
                         }
-                        parse_args!(@inner (0usize) $($t)*)
+                        res
                     }};
-                    (@inner ($index:expr) $first:ident $($rest:ident)+) => { (parse_args!(@inner $index $first), parse_args!(@inner ($index + 1usize) $($rest)*)) };
-                    (@inner ($index:expr) bool) => {{
+                    (($index:expr) bool) => {{
                         let index = $index;
                         match args[index].to_bool() {
                             Ok(x) => x,
@@ -505,7 +539,27 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                             }
                         }
                     }};
-                    (@inner ($_:expr)) => { () };
+                    (($index:expr) f64) => {{
+                        let index = $index;
+                        match args[index].to_number() {
+                            Ok(x) => x.get(),
+                            Err(e) => {
+                                key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected a number for arg {}, but got {:?}", index + 1, e.got)));
+                                return RequestStatus::Handled;
+                            }
+                        }
+                    }};
+                    (($_:expr)) => { () };
+                }
+                macro_rules! parse_args {
+                    ($($t:tt)*) => {{
+                        let expected = count_expected!($($t)*);
+                        if args.len() != expected {
+                            key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected {expected} args, but got {}", args.len())));
+                            return RequestStatus::Handled;
+                        }
+                        parse_args_inner!((0usize) $($t)*)
+                    }};
                 }
 
                 let mut peripheral_handles = peripheral_handles.borrow_mut();
@@ -525,7 +579,20 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                             "set" => {
                                 let value = parse_args!(bool);
                                 handle.set_value(value).unwrap();
-                                key.complete(Ok(Intermediate::Json(json!("OK"))));
+                                ok!();
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "Motor" => match peripheral_handles.motor_groups.get(peripheral) {
+                        Some(handle) => match function {
+                            "setPower" => {
+                                let powers = parse_args!([f64; handle.len()]);
+                                for (motor, power) in iter::zip(handle, powers) {
+                                    motor.borrow_mut().set_power(power).unwrap();
+                                }
+                                ok!();
                             }
                             _ => unknown!(function),
                         }
@@ -542,137 +609,4 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
     };
 
     Ok((config, syscalls))
-
-    // let config = Config::<C, _> {
-    //     request: Some(Rc::new(move |_, _, key, request, _| match &request {
-    //         Request::Syscall { name, args } => {
-    //             match name.as_str() {
-
-
-
-                    
-    //                 "driveWheels" => match args.as_slice() {
-    //                     [x_LeftWheel,x_RightWheel,] => match (x_LeftWheel.to_number(),x_RightWheel.to_number(),) {
-    //                         (Ok(x_LeftWheel),Ok(x_RightWheel),) => {
-                                
-    //                             motor_LeftWheel.borrow_mut().set_power(x_LeftWheel).unwrap();
-                                
-    //                             motor_RightWheel.borrow_mut().set_power(x_RightWheel).unwrap();
-                                
-    //                             key.complete(Ok(Intermediate::Json(json!("OK"))));
-    //                         }
-    //                         _ => key.complete(Err(format!("driveWheels expected only numeric inputs"))),
-    //                     }
-    //                     _ => key.complete(Err(format!("driveWheels expected 2 args, got {}", args.len()))),
-    //                 }
-                    
-    //                 "driveLeftWheel" => match args.as_slice() {
-    //                     [x_LeftWheel,] => match (x_LeftWheel.to_number(),) {
-    //                         (Ok(x_LeftWheel),) => {
-                                
-    //                             motor_LeftWheel.borrow_mut().set_power(x_LeftWheel).unwrap();
-                                
-    //                             key.complete(Ok(Intermediate::Json(json!("OK"))));
-    //                         }
-    //                         _ => key.complete(Err(format!("driveLeftWheel expected only numeric inputs"))),
-    //                     }
-    //                     _ => key.complete(Err(format!("driveLeftWheel expected 1 args, got {}", args.len()))),
-    //                 }
-                    
-    //                 "driveRightWheel" => match args.as_slice() {
-    //                     [x_RightWheel,] => match (x_RightWheel.to_number(),) {
-    //                         (Ok(x_RightWheel),) => {
-                                
-    //                             motor_RightWheel.borrow_mut().set_power(x_RightWheel).unwrap();
-                                
-    //                             key.complete(Ok(Intermediate::Json(json!("OK"))));
-    //                         }
-    //                         _ => key.complete(Err(format!("driveRightWheel expected only numeric inputs"))),
-    //                     }
-    //                     _ => key.complete(Err(format!("driveRightWheel expected 1 args, got {}", args.len()))),
-    //                 }
-                    
-
-                    
-    //                 "getDistanceForward" => match args.as_slice() {
-    //                     [] => key.complete(Ok(Intermediate::Json(json!(ultrasonic_distance_Forward.borrow_mut().get_value().unwrap())))),
-    //                     _ => key.complete(Err(format!("getDistanceForward expected 0 args, got {}", args.len()))),
-    //                 }
-                    
-
-                    
-    //                 "getTemperatureProbe" => match args.as_slice() {
-    //                     [] => key.complete(Ok(Intermediate::Json(json!(max30205_Probe.borrow_mut().get_temperature().unwrap())))),
-    //                     _ => key.complete(Err(format!("getTemperatureProbe expected 0 args, got {}", args.len()))),
-    //                 }
-                    
-
-    //                 _ => return RequestStatus::UseDefault { key, request },
-    //             }
-    //             RequestStatus::Handled
-    //         }
-    //         _ => RequestStatus::UseDefault { key, request },
-    //     })),
-    //     command: None,
-    // };
-
-    // let syscalls = &[
-        
-    //     SyscallMenu::Submenu {
-    //         label: "DigitalIO",
-    //         content: &[
-                
-    //             SyscallMenu::Entry { label: "getButtonPressed" },
-                
-
-                
-    //             SyscallMenu::Entry { label: "setRedLedOn" },
-                
-    //         ],
-    //     },
-        
-
-        
-    //     SyscallMenu::Submenu {
-    //         label: "Motor",
-    //         content: &[
-                
-    //             SyscallMenu::Entry { label: "driveWheels" },
-                
-    //             SyscallMenu::Entry { label: "driveLeftWheel" },
-                
-    //             SyscallMenu::Entry { label: "driveRightWheel" },
-                
-    //         ],
-    //     },
-        
-
-        
-    //     SyscallMenu::Submenu {
-    //         label: "Distance",
-    //         content: &[
-                
-    //             SyscallMenu::Entry { label: "getDistanceForward" },
-                
-    //         ],
-    //     },
-        
-
-        
-    //     SyscallMenu::Submenu {
-    //         label: "Temperature",
-    //         content: &[
-                
-    //             SyscallMenu::Entry { label: "getTemperatureProbe" },
-                
-    //         ],
-    //     },
-        
-    // ];
-
-    // let unused_peripherals = UnusedPeripherals {
-    //     modem: peripherals.modem,
-    // };
-
-    // (unused_peripherals, config, syscalls)
 }
