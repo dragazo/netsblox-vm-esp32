@@ -24,7 +24,7 @@ use serde::Deserialize;
 
 use string_ring::{StringRing, Granularity};
 
-use netsblox_vm::template::{ExtensionArgs, SyscallMenu, EMPTY_PROJECT};
+use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT};
 use netsblox_vm::process::ErrorSummary;
 use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
@@ -299,7 +299,7 @@ impl Handler<EspHttpConnection<'_>> for InputHandler {
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "text/plain"),
         ])?;
-        connection.write(b"toggled pause state")?;
+        connection.write(b"accepted input")?;
         Ok(())
     }
 }
@@ -632,6 +632,9 @@ impl Executor {
                     }
                 }
                 Some(ServerCommand::Input(x)) => {
+                    if let Input::Start = &x {
+                        self.runtime.lock().unwrap().running = true;
+                    }
                     running_env.mutate(|mc, running_env| {
                         running_env.proj.write(mc).input(x);
                     });

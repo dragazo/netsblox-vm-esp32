@@ -1,5 +1,5 @@
 use std::collections::{BTreeMap, VecDeque};
-use std::time::Instant;
+use std::time::{Instant, Duration};
 use std::cell::RefCell;
 use std::sync::Arc;
 use std::rc::Rc;
@@ -295,6 +295,22 @@ impl<T: I2cWriteRead<A>, A: I2cAddressMode> I2cWriteRead<A> for SharedI2c<T> {
 
 // -----------------------------------------------------------------
 
+fn measure_pulse(pin: &mut PinDriver<'static, AnyInputPin, Input>, level: Level, timeout: Duration) -> Option<Duration> {
+    let total_start = Instant::now();
+    while pin.get_level() != level {
+        if total_start.elapsed() > timeout {
+            return None;
+        }
+    }
+    let pulse_start = Instant::now();
+    while pin.get_level() == level {
+        if total_start.elapsed() > timeout {
+            return None;
+        }
+    }
+    Some(pulse_start.elapsed())
+}
+
 struct MotorController {
     positive: LedcDriver<'static>, // they say to use ledc driver for general purpose pwm: https://esp-rs.github.io/esp-idf-hal/esp_idf_hal/ledc/index.html
     negative: LedcDriver<'static>,
@@ -342,14 +358,11 @@ struct HCSR04Controller {
     echo: PinDriver<'static, AnyInputPin, Input>,
 }
 impl HCSR04Controller {
-    fn get_value(&mut self) -> Result<f64, EspError> {
+    fn get_distance(&mut self) -> Result<f64, EspError> {
         self.trigger.set_high()?;
         Ets::delay_us(10);
         self.trigger.set_low()?;
-        while self.echo.is_low() {}
-        let start = Instant::now();
-        while self.echo.is_high() {}
-        let duration = start.elapsed().as_micros();
+        let duration = measure_pulse(&mut self.echo, Level::High, Duration::from_millis(50)).map(|x| x.as_micros()).unwrap_or(0);
         Ok(duration as f64 * 0.01715) // half (because round trip) the speed of sound in cm/us
     }
 }
@@ -468,6 +481,8 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
 
     let hcsr04s = {
         let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.hcsr04s.len());
+
         for entry in peripherals_config.hcsr04s.iter() {
             let controller = HCSR04Controller {
                 trigger: PinDriver::output(pins.take_convert(entry.gpio_trigger, AnyPin::try_into_output)?)?,
@@ -476,18 +491,30 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
             if res.insert(entry.name.clone(), controller).is_some() {
                 return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
             }
+            menu_content.push(menu_entries!("HCSR04", entry.name => "getDistance"));
         }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "HCSR04".into(), content: menu_content });
+        }
+
         res
     };
 
     let max30205s = {
         let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.max30205s.len());
+
         for entry in peripherals_config.max30205s.iter() {
             let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
             if res.insert(entry.name.clone(), max30205::MAX30205::new(entry.i2c_addr, i2c)?).is_some() {
                 return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
             }
+            menu_content.push(menu_entries!("MAX30205", entry.name => "getTemperature"));
         }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "MAX30205".into(), content: menu_content });
+        }
+
         res
     };
 
@@ -593,6 +620,26 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                                     motor.borrow_mut().set_power(power).unwrap();
                                 }
                                 ok!();
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "HCSR04" => match peripheral_handles.hcsr04s.get_mut(peripheral) {
+                        Some(handle) => match function {
+                            "getDistance" => {
+                                parse_args!();
+                                key.complete(Ok(Intermediate::Json(json!(handle.get_distance().unwrap()))));
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "MAX30205" => match peripheral_handles.max30205s.get_mut(peripheral) {
+                        Some(handle) => match function {
+                            "getTemperature" => {
+                                parse_args!();
+                                key.complete(Ok(Intermediate::Json(json!(handle.get_temperature().unwrap()))));
                             }
                             _ => unknown!(function),
                         }
