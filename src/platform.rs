@@ -34,6 +34,7 @@ struct PeripheralHandles {
 
     hcsr04s: BTreeMap<String, HCSR04Controller>,
     max30205s: BTreeMap<String, max30205::MAX30205<SharedI2c<I2cDriver<'static>>>>,
+    is31fl3741s: BTreeMap<String, is31fl3741::devices::AdafruitRGB13x9<SharedI2c<I2cDriver<'static>>>>,
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -49,6 +50,7 @@ pub struct PeripheralsConfig {
 
     #[serde(default)] hcsr04s: Vec<HCSR04>,
     #[serde(default)] max30205s: Vec<BasicI2c>,
+    #[serde(default)] is31fl3741s: Vec<BasicI2c>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -185,13 +187,13 @@ struct PwmManager {
     timer: Arc<LedcTimerDriver<'static>>,
 }
 impl PwmManager {
-    fn new(ledc: LEDC) -> Self {
+    fn new(ledc: LEDC) -> Result<Self, EspError> {
         let timer_config = TimerConfig {
             frequency: 20.kHz().into(),
             resolution: Resolution::Bits10,
             speed_mode: SpeedMode::LowSpeed,
         };
-        let timer = Arc::new(LedcTimerDriver::new(ledc.timer0, &timer_config).unwrap());
+        let timer = Arc::new(LedcTimerDriver::new(ledc.timer0, &timer_config)?);
 
         let mut channels = VecDeque::new();
         channels.push_back(ledc.channel0.into());
@@ -202,7 +204,7 @@ impl PwmManager {
         channels.push_back(ledc.channel5.into());
         channels.push_back(ledc.channel6.into());
         channels.push_back(ledc.channel7.into());
-        Self { channels, timer }
+        Ok(Self { channels, timer })
     }
     fn take(&mut self, pin: AnyOutputPin) -> Result<LedcDriver<'static>, PeripheralError> {
         match self.channels.pop_front() {
@@ -377,7 +379,7 @@ pub struct SyscallPeripherals {
 
 pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &PeripheralsConfig) -> Result<(Config<C, EspSystem<C>>, Vec<SyscallMenu>), PeripheralError> {
     let mut pins = GpioManager::new(peripherals.pins);
-    let mut pwms = PwmManager::new(peripherals.ledc);
+    let mut pwms = PwmManager::new(peripherals.ledc)?;
 
     let mut syscalls = vec![];
 
@@ -387,7 +389,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         Some(i2c) => {
             let sda = pins.take_convert(i2c.gpio_sda, AnyPin::try_into_input_output)?;
             let scl = pins.take_convert(i2c.gpio_scl, AnyPin::try_into_input_output)?;
-            Some(SharedI2c::new(I2cDriver::new(peripherals.i2c, sda, scl, &Default::default()).unwrap()))
+            Some(SharedI2c::new(I2cDriver::new(peripherals.i2c, sda, scl, &Default::default())?))
         }
         None => None,
     };
@@ -518,7 +520,34 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         res
     };
 
-    let peripheral_handles = RefCell::new(PeripheralHandles { digital_ins, digital_outs, motor_groups, hcsr04s, max30205s });
+    let is31fl3741s = {
+        let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.is31fl3741s.len());
+
+        for entry in peripherals_config.is31fl3741s.iter() {
+            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let mut device = is31fl3741::devices::AdafruitRGB13x9::configure(i2c);
+            match device.setup(&mut Ets) {
+                Ok(()) => (),
+                Err(is31fl3741::Error::I2cError(e)) => return Err(e.into()),
+                Err(_) => panic!(),
+            }
+            device.set_scaling(0xff)?;
+            if res.insert(entry.name.clone(), device).is_some() {
+                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            }
+            menu_content.push(menu_entries!("IS31FL3741", entry.name => "setPixel"));
+        }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "IS31FL3741".into(), content: menu_content });
+        }
+
+        res
+    };
+
+    let peripheral_handles = RefCell::new(PeripheralHandles {
+        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s,
+    });
 
     let config = Config::<C, _> {
         request: Some(Rc::new(move |_, _, key, request, _| match &request {
@@ -545,7 +574,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                 }
                 macro_rules! parse_args_inner {
                     (($index:expr) $first:ident $($rest:tt)+) => {
-                        (parse_args_inner!($index $first), parse_args_inner!(($index + 1usize) $($rest)+))
+                        (parse_args_inner!(($index) $first), parse_args_inner!(($index + 1usize) $($rest)+))
                     };
                     (($index:expr) [$first:ident ; $n:expr]) => {{
                         let index = $index;
@@ -575,6 +604,15 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                                 return RequestStatus::Handled;
                             }
                         }
+                    }};
+                    (($index:expr) u8) => {{
+                        let raw = parse_args_inner!(($index) f64);
+                        let cvt = raw as u8;
+                        if cvt as f64 != raw {
+                            key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected an integer in [0, 255] for arg {}, but got {raw}", $index + 1)));
+                            return RequestStatus::Handled;
+                        }
+                        cvt
                     }};
                     (($_:expr)) => { () };
                 }
@@ -640,6 +678,21 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                             "getTemperature" => {
                                 parse_args!();
                                 key.complete(Ok(Intermediate::Json(json!(handle.get_temperature().unwrap()))));
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "IS31FL3741" => match peripheral_handles.is31fl3741s.get_mut(peripheral) {
+                        Some(handle) => match function {
+                            "setPixel" => {
+                                let (x, (y, (r, (g, b)))) = parse_args!(u8 u8 u8 u8 u8);
+                                if x >= 13 || y >= 9 {
+                                    key.complete(Err(format!("pixel position ({x}, {y}) is out of bounds")));
+                                    return RequestStatus::Handled;
+                                }
+                                handle.pixel_rgb(x, y, r, g, b).unwrap();
+                                ok!();
                             }
                             _ => unknown!(function),
                         }
