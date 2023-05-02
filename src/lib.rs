@@ -48,6 +48,7 @@ use crate::wifi::*;
 
 const YIELDS_BEFORE_IDLE_SLEEP: usize = 256;
 const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1ms precision (minimum value before no-op)
+const STEP_BATCH_SIZE: usize = 128;
 const STEPS_BETWEEN_GC: usize = 1024;
 
 // max size of output and error (circular) buffers between status polls
@@ -648,21 +649,24 @@ impl Executor {
             if !running { continue }
 
             running_env.mutate(|mc, running_env| {
-                let res = running_env.proj.write(mc).step(mc);
-                if let ProjectStep::Error { error, proc } = &res {
-                    let err = ErrorSummary::extract(error, proc, &running_env.locs);
-                    let err_str = serde_json::to_string(&err).unwrap();
-                    debug_assert_eq!(err_str.lines().count(), 1);
+                let mut proj = running_env.proj.write(mc);
+                for _ in 0..STEP_BATCH_SIZE {
+                    let res = proj.step(mc);
+                    if let ProjectStep::Error { error, proc } = &res {
+                        let err = ErrorSummary::extract(error, proc, &running_env.locs);
+                        let err_str = serde_json::to_string(&err).unwrap();
+                        debug_assert_eq!(err_str.lines().count(), 1);
 
-                    let mut runtime = self.runtime.lock().unwrap();
-                    tee_println!(&mut runtime => "\n>>> error {}\n", err.cause);
-                    runtime.errors.push(&err_str);
-                    runtime.errors.push("\n");
+                        let mut runtime = self.runtime.lock().unwrap();
+                        tee_println!(&mut runtime => "\n>>> error {}\n", err.cause);
+                        runtime.errors.push(&err_str);
+                        runtime.errors.push("\n");
+                    }
+                    idle_sleeper.consume(&res);
+                    steps_since_gc += 1;
                 }
-                idle_sleeper.consume(&res);
             });
 
-            steps_since_gc += 1;
             if steps_since_gc > STEPS_BETWEEN_GC {
                 steps_since_gc = 0;
                 running_env.collect_all();
