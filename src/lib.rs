@@ -48,6 +48,7 @@ use crate::wifi::*;
 
 const YIELDS_BEFORE_IDLE_SLEEP: usize = 256;
 const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1ms precision (minimum value before no-op)
+const STEPS_BETWEEN_GC: usize = 1024;
 
 // max size of output and error (circular) buffers between status polls
 const OUTPUT_BUFFER_SIZE: usize = 32 * 1024;
@@ -612,6 +613,7 @@ impl Executor {
         tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> starting project (public id: {})\n", system.get_public_id());
 
         let mut idle_sleeper = IdleAction::new(YIELDS_BEFORE_IDLE_SLEEP, Box::new(|| thread::sleep(IDLE_SLEEP_TIME)));
+        let mut steps_since_gc = 0;
 
         loop {
             let command = self.runtime.lock().unwrap().commands.pop_front();
@@ -659,7 +661,12 @@ impl Executor {
                 }
                 idle_sleeper.consume(&res);
             });
-            running_env.collect_all();
+
+            steps_since_gc += 1;
+            if steps_since_gc > STEPS_BETWEEN_GC {
+                steps_since_gc = 0;
+                running_env.collect_all();
+            }
         }
     }
 }
