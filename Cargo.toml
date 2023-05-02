@@ -47,8 +47,8 @@ string-ring = { version = "0.1.1", default-features = false }
 # peripheral deps
 embedded-hal = "0.2.7"
 max30205 = "0.1.1"
-# is31fl3741 = "0.2.1"
-is31fl3741 = { git = "https://github.com/JohnAZoidberg/is31fl3741", branch = "fix-b3" }
+is31fl3741 = { git = "https://github.com/dragazo/is31fl3741" }
+bmp388 = { git = "https://github.com/dragazo/bmp388" }
 
 [build-dependencies]
 embuild = "0.31"

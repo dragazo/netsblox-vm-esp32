@@ -33,8 +33,10 @@ struct PeripheralHandles {
     motor_groups: BTreeMap<String, Vec<Rc<RefCell<MotorController>>>>,
 
     hcsr04s: BTreeMap<String, HCSR04Controller>,
+
     max30205s: BTreeMap<String, max30205::MAX30205<SharedI2c<I2cDriver<'static>>>>,
     is31fl3741s: BTreeMap<String, is31fl3741::devices::AdafruitRGB13x9<SharedI2c<I2cDriver<'static>>>>,
+    bmp388s: BTreeMap<String, bmp388::BMP388<SharedI2c<I2cDriver<'static>>>>,
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -49,8 +51,10 @@ pub struct PeripheralsConfig {
     #[serde(default)] motor_groups: Vec<MotorGroup>,
 
     #[serde(default)] hcsr04s: Vec<HCSR04>,
+
     #[serde(default)] max30205s: Vec<BasicI2c>,
     #[serde(default)] is31fl3741s: Vec<BasicI2c>,
+    #[serde(default)] bmp388s: Vec<BasicI2c>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -526,7 +530,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
 
         for entry in peripherals_config.is31fl3741s.iter() {
             let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
-            let mut device = is31fl3741::devices::AdafruitRGB13x9::configure(i2c);
+            let mut device = is31fl3741::devices::AdafruitRGB13x9::configure(i2c, entry.i2c_addr);
             match device.setup(&mut Ets) {
                 Ok(()) => (),
                 Err(is31fl3741::Error::I2cError(e)) => return Err(e.into()),
@@ -545,8 +549,28 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         res
     };
 
+    let bmp388s = {
+        let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.bmp388s.len());
+
+        for entry in peripherals_config.bmp388s.iter() {
+            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let mut device = bmp388::BMP388::new(i2c, entry.i2c_addr, &mut Ets)?;
+            device.set_power_control(bmp388::PowerControl { pressure_enable: true, temperature_enable: true, mode: bmp388::PowerMode::Normal })?;
+            if res.insert(entry.name.clone(), device).is_some() {
+                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            }
+            menu_content.push(menu_entries!("BMP388", entry.name => "getPressure", "getTemperature"));
+        }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "BMP388".into(), content: menu_content });
+        }
+
+        res
+    };
+
     let peripheral_handles = RefCell::new(PeripheralHandles {
-        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s,
+        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s, bmp388s,
     });
 
     let config = Config::<C, _> {
@@ -693,6 +717,20 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                                 }
                                 handle.pixel_rgb(x, y, r, g, b).unwrap();
                                 ok!();
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "BMP388" => match peripheral_handles.bmp388s.get_mut(peripheral) {
+                        Some(handle) => match function {
+                            "getPressure" => {
+                                parse_args!();
+                                key.complete(Ok(Intermediate::from_json(json!(handle.sensor_values().unwrap().pressure))));
+                            }
+                            "getTemperature" => {
+                                parse_args!();
+                                key.complete(Ok(Intermediate::from_json(json!(handle.sensor_values().unwrap().temperature))));
                             }
                             _ => unknown!(function),
                         }
