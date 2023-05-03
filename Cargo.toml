@@ -51,6 +51,7 @@ bmp388 = { git = "https://github.com/dragazo/bmp388" }
 is31fl3741 = { git = "https://github.com/dragazo/is31fl3741" }
 
 zune-image = { git = "https://github.com/etemesi254/zune-image", default-features = false, features = ["metadata", "png"] }
+image = { version = "0.24.6", default-features = false, features = ["jpeg", "jpeg_rayon", "pnm", "tga", "hdr", "dxt", "dds", "farbfeld", "openexr"] }
 
 [build-dependencies]
 embuild = "0.31"
