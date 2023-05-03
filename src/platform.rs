@@ -540,7 +540,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
             if res.insert(entry.name.clone(), device).is_some() {
                 return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
             }
-            menu_content.push(menu_entries!("IS31FL3741", entry.name => "setPixel"));
+            menu_content.push(menu_entries!("IS31FL3741", entry.name => "setPixel", "setImage"));
         }
         if !menu_content.is_empty() {
             syscalls.push(SyscallMenu::Submenu { label: "IS31FL3741".into(), content: menu_content });
@@ -638,6 +638,22 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         }
                         cvt
                     }};
+                    (($index:expr) Image) => {{
+                        let index = $index;
+                        match args[index].as_image() {
+                            Ok(x) => match image::load_from_memory(x) {
+                                Ok(x) => x,
+                                Err(e) => {
+                                    key.complete(Err(format!("unknown image format: {e:?}")));
+                                    return RequestStatus::Handled;
+                                }
+                            }
+                            Err(e) => {
+                                key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected an image for arg {}, but got {:?}", index + 1, e.got)));
+                                return RequestStatus::Handled;
+                            }
+                        }
+                    }};
                     (($_:expr)) => { () };
                 }
                 macro_rules! parse_args {
@@ -717,6 +733,19 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                                 }
                                 handle.pixel_rgb(x, y, r, g, b).unwrap();
                                 ok!();
+                            }
+                            "setImage" => {
+                                // let img = parse_args!(Image);
+                                // let img = img.resize(13, 9, image::imageops::FilterType::Nearest).into_rgb8();
+                                // let (w, h) = (img.width() as u8, img.height() as u8);
+                                // for x in 0..w {
+                                //     for y in 0..h {
+                                //         let [r, g, b] = img.get_pixel(x as u32, y as u32).0;
+                                //         handle.pixel_rgb(x, y, r, g, b).unwrap();
+                                //     }
+                                // }
+                                // ok!();
+                                unimplemented!()
                             }
                             _ => unknown!(function),
                         }
