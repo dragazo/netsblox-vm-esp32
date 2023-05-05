@@ -479,6 +479,13 @@ impl Executor {
         Ok(Executor { storage, wifi, runtime })
     }
     pub fn run(&self, peripherals: platform::SyscallPeripherals) -> ! {
+        {
+            let mut storage = self.storage.lock().unwrap();
+            if !storage.project().is_defined().unwrap() {
+                storage.project().set(&include_str!("../test-err.xml.keep").into()).unwrap();
+            }
+        }
+
         let (config, syscalls, peripherals_status_html) = {
             let mut peripherals_status_html = String::new();
             let peripherals_config = match self.storage.lock().unwrap().peripherals().get().unwrap() {

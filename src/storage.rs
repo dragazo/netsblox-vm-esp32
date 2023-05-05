@@ -24,6 +24,9 @@ pub struct Entry<'a, T: EntryType> {
     _phantom: PhantomData<T>,
 }
 impl<T: EntryType> Entry<'_, T> {
+    pub fn is_defined(&self) -> Result<bool, EspError> {
+        Ok(self.nvs.len(self.key)?.is_some())
+    }
     pub fn get(&self) -> Result<Option<T>, EspError> {
         let len = match self.nvs.len(self.key)? {
             Some(x) => x,
