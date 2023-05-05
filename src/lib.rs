@@ -79,7 +79,9 @@ enum OpenProjectError {
 }
 
 fn open_project(xml: &str) -> Result<ast::Role, OpenProjectError> {
+    println!("before parse {}", xml.len());
     let ast = ast::Parser::default().parse(xml).map_err(OpenProjectError::ParseError)?;
+    println!("after parse {}", ast.roles.len());
     match ast.roles.len() {
         0 => Err(OpenProjectError::NoRoles),
         1 => Ok(ast.roles.into_iter().next().unwrap()),
@@ -597,19 +599,28 @@ impl Executor {
             request: None,
         });
 
+        println!("before system init");
         let system = Rc::new(EspSystem::<platform::C>::new(server_addr, Some("project"), config));
+        println!("after system init");
 
+        println!("before env");
         let mut running_env = {
             let role = {
+                println!("here 1");
                 let xml = self.storage.lock().unwrap().project().get().unwrap();
+                println!("here 2");
                 let xml = xml.as_deref().unwrap_or(EMPTY_PROJECT);
+                println!("here 3");
                 open_project(&xml).unwrap()
             };
+            println!("before get env");
             get_env(&role, system.clone()).unwrap()
         };
+        println!("got env");
         running_env.mutate(|mc, running_env| {
             running_env.proj.write(mc).input(Input::Start);
         });
+        println!("started env");
 
         tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> starting project (public id: {})\n", system.get_public_id());
 
