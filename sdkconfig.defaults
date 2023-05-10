@@ -6,6 +6,9 @@
 #CONFIG_LOG_DEFAULT_LEVEL_VERBOSE=y
 #CONFIG_LOG_MAXIMUM_LEVEL_VERBOSE=y
 
+# misc debugging checks
+#CONFIG_COMPILER_STACK_CHECK_MODE_ALL=y
+
 # -----------------------------------------------------------
 
 # Use this to set FreeRTOS kernel tick frequency to 1000 Hz (100 Hz by default).
@@ -15,8 +18,8 @@ CONFIG_FREERTOS_HZ=1000
 # -----------------------------------------------------------
 
 # rust needs more stack storage than C, so override it
-CONFIG_ESP_MAIN_TASK_STACK_SIZE=20000
-CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=6000
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=64000
+CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT=8000
 
 # disable idle watchdog for main task (to avoid non-yielding user code from triggering the watchdog)
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0=n
@@ -44,6 +47,7 @@ CONFIG_SPIRAM_MODE_OCT=y
 # malloc with spi ram and try to preserve as much internal memory as possible for system tasks
 CONFIG_SPIRAM_USE_MALLOC=y
 CONFIG_SPIRAM_MALLOC_RESERVE_INTERNAL=262144
+CONFIG_SPIRAM_MALLOC_ALWAYSINTERNAL=0
 CONFIG_SPIRAM_TRY_ALLOCATE_WIFI_LWIP=y
 
 # misc settings to try to save more internal memory
