@@ -73,7 +73,7 @@ fn get_env<C: CustomTypes<S>, S: System<C>>(role: &ast::Role, system: Rc<S>) -> 
 
 #[derive(Debug)]
 enum OpenProjectError {
-    ParseError(ast::Error),
+    ParseError(Box<ast::Error>),
     NoRoles,
     MultipleRoles,
 }

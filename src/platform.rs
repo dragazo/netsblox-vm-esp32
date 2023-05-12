@@ -7,6 +7,7 @@ use std::iter;
 
 use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ErrorCause, Config, Request, RequestStatus};
 use netsblox_vm::json::{Json, json};
+use netsblox_vm::gc::gc_arena;
 use netsblox_vm::runtime::{CustomTypes, IntermediateType, Key};
 use netsblox_vm::template::SyscallMenu;
 
