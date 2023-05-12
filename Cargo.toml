@@ -50,6 +50,7 @@ max30205 = "0.1.1"
 lis3dh = { git = "https://github.com/dragazo/lis3dh-rs" }
 is31fl3741 = { git = "https://github.com/dragazo/is31fl3741" }
 bmp388 = { git = "https://github.com/dragazo/bmp388" }
+veml6030 = { git = "https://github.com/dragazo/veml6030-rs" }
 
 [build-dependencies]
 embuild = "0.31"

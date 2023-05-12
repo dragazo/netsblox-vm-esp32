@@ -39,6 +39,7 @@ struct PeripheralHandles {
     is31fl3741s: BTreeMap<String, is31fl3741::devices::AdafruitRGB13x9<SharedI2c<I2cDriver<'static>>>>,
     bmp388s: BTreeMap<String, bmp388::BMP388<SharedI2c<I2cDriver<'static>>>>,
     lis3dhs: BTreeMap<String, lis3dh::Lis3dh<lis3dh::Lis3dhI2C<SharedI2c<I2cDriver<'static>>>>>,
+    veml7700s: BTreeMap<String, veml6030::Veml6030<SharedI2c<I2cDriver<'static>>>>,
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -58,6 +59,7 @@ pub struct PeripheralsConfig {
     #[serde(default)] is31fl3741s: Vec<BasicI2c>,
     #[serde(default)] bmp388s: Vec<BasicI2c>,
     #[serde(default)] lis3dhs: Vec<BasicI2c>,
+    #[serde(default)] veml7700s: Vec<BasicI2c>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -596,8 +598,32 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         res
     };
 
+    let veml7700s = {
+        let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.veml7700s.len());
+
+        for entry in peripherals_config.veml7700s.iter() {
+            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let mut device = veml6030::Veml6030::new(i2c, veml6030::SlaveAddr(entry.i2c_addr));
+            match device.enable() {
+                Ok(()) => (),
+                Err(veml6030::Error::I2C(e)) => return Err(e.into()),
+            }
+            if res.insert(entry.name.clone(), device).is_some() {
+                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            }
+            menu_content.push(menu_entries!("VEML7700", entry.name => "getLight"));
+        }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "VEML7700".into(), content: menu_content });
+        }
+
+        res
+    };
+
     let peripheral_handles = RefCell::new(PeripheralHandles {
-        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s, bmp388s, lis3dhs,
+        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s, bmp388s,
+        lis3dhs, veml7700s,
     });
 
     let config = Config::<C, _> {
@@ -769,6 +795,16 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                                 parse_args!();
                                 let vals = lis3dh::accelerometer::Accelerometer::accel_norm(handle).unwrap();
                                 key.complete(Ok(Intermediate::from_json(json!([vals.x, vals.y, vals.z]))));
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "VEML7700" => match peripheral_handles.veml7700s.get_mut(peripheral) {
+                        Some(handle) => match function {
+                            "getLight" => {
+                                parse_args!();
+                                key.complete(Ok(Intermediate::from_json(json!(handle.read_lux().unwrap()))));
                             }
                             _ => unknown!(function),
                         }
