@@ -38,6 +38,7 @@ struct PeripheralHandles {
     max30205s: BTreeMap<String, max30205::MAX30205<SharedI2c<I2cDriver<'static>>>>,
     is31fl3741s: BTreeMap<String, is31fl3741::devices::AdafruitRGB13x9<SharedI2c<I2cDriver<'static>>>>,
     bmp388s: BTreeMap<String, bmp388::BMP388<SharedI2c<I2cDriver<'static>>>>,
+    lis3dhs: BTreeMap<String, lis3dh::Lis3dh<lis3dh::Lis3dhI2C<SharedI2c<I2cDriver<'static>>>>>,
 }
 
 #[derive(Default, Debug, Deserialize)]
@@ -56,6 +57,7 @@ pub struct PeripheralsConfig {
     #[serde(default)] max30205s: Vec<BasicI2c>,
     #[serde(default)] is31fl3741s: Vec<BasicI2c>,
     #[serde(default)] bmp388s: Vec<BasicI2c>,
+    #[serde(default)] lis3dhs: Vec<BasicI2c>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -116,6 +118,7 @@ pub enum PeripheralError {
     I2cNotConfigured,
     EspError(EspError),
     I2cError(I2cError),
+    Other { cause: String },
 }
 impl From<EspError> for PeripheralError { fn from(value: EspError) -> Self { Self::EspError(value) } }
 impl From<I2cError> for PeripheralError { fn from(value: I2cError) -> Self { Self::I2cError(value) } }
@@ -570,8 +573,31 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         res
     };
 
+    let lis3dhs = {
+        let mut res = BTreeMap::new();
+        let mut menu_content = Vec::with_capacity(peripherals_config.lis3dhs.len());
+
+        for entry in peripherals_config.lis3dhs.iter() {
+            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let device = match lis3dh::Lis3dh::new_i2c(i2c, lis3dh::SlaveAddr(entry.i2c_addr)) {
+                Ok(x) => x,
+                Err(lis3dh::Error::Bus(e)) => return Err(e.into()),
+                Err(e) => return Err(PeripheralError::Other { cause: format!("{e:?}") }),
+            };
+            if res.insert(entry.name.clone(), device).is_some() {
+                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            }
+            menu_content.push(menu_entries!("LIS3DH", entry.name => "getAcceleration"));
+        }
+        if !menu_content.is_empty() {
+            syscalls.push(SyscallMenu::Submenu { label: "LIS3DH".into(), content: menu_content });
+        }
+
+        res
+    };
+
     let peripheral_handles = RefCell::new(PeripheralHandles {
-        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s, bmp388s,
+        digital_ins, digital_outs, motor_groups, hcsr04s, max30205s, is31fl3741s, bmp388s, lis3dhs,
     });
 
     let config = Config::<C, _> {
@@ -732,6 +758,17 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                             "getTemperature" => {
                                 parse_args!();
                                 key.complete(Ok(Intermediate::from_json(json!(handle.sensor_values().unwrap().temperature))));
+                            }
+                            _ => unknown!(function),
+                        }
+                        None => unknown!(peripheral),
+                    }
+                    "LIS3DH" => match peripheral_handles.lis3dhs.get_mut(peripheral) {
+                        Some(handle) => match function {
+                            "getAcceleration" => {
+                                parse_args!();
+                                let vals = lis3dh::accelerometer::Accelerometer::accel_norm(handle).unwrap();
+                                key.complete(Ok(Intermediate::from_json(json!([vals.x, vals.y, vals.z]))));
                             }
                             _ => unknown!(function),
                         }

@@ -47,6 +47,7 @@ string-ring = { version = "0.1.1", default-features = false }
 # peripheral deps
 embedded-hal = "0.2.7"
 max30205 = "0.1.1"
+lis3dh = { git = "https://github.com/dragazo/lis3dh-rs" }
 is31fl3741 = { git = "https://github.com/dragazo/is31fl3741" }
 bmp388 = { git = "https://github.com/dragazo/bmp388" }
 
