@@ -489,15 +489,15 @@ impl Executor {
                 }
                 None => Default::default(),
             };
-            let (config, syscalls) = match platform::bind_syscalls(peripherals, &peripherals_config) {
-                Ok(x) => x,
-                Err(e) => {
-                    write!(peripherals_status_html, "<p>failed to initialize peripherals: {e:?}</p>").unwrap();
-                    Default::default()
+            let (config, syscalls, init_errors) = platform::bind_syscalls(peripherals, &peripherals_config);
+            match init_errors.is_empty() {
+                true => peripherals_status_html.push_str("<p>successfully loaded peripherals</p>"),
+                false => {
+                    peripherals_status_html.push_str("<p>failed to initialize peripherals:</p>");
+                    for e in init_errors.iter() {
+                        write!(peripherals_status_html, "<p>{} -- {:?}</p>", e.context, e.error).unwrap();
+                    }
                 }
-            };
-            if peripherals_status_html.is_empty() {
-                peripherals_status_html.push_str("<p>successfully loaded peripherals</p>");
             }
             (config, syscalls, peripherals_status_html)
         };

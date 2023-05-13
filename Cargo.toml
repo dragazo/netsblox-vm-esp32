@@ -46,11 +46,11 @@ string-ring = { version = "0.1.1", default-features = false }
 
 # peripheral deps
 embedded-hal = "0.2.7"
-max30205 = "0.1.1"
-lis3dh = { git = "https://github.com/dragazo/lis3dh-rs" }
-is31fl3741 = { git = "https://github.com/dragazo/is31fl3741" }
-bmp388 = { git = "https://github.com/dragazo/bmp388" }
-veml6030 = { git = "https://github.com/dragazo/veml6030-rs" }
+max30205 = { version = "0.1.1", default-features = false }
+lis3dh = { git = "https://github.com/dragazo/lis3dh-rs", default-features = false }
+is31fl3741 = { git = "https://github.com/dragazo/is31fl3741", default-features = false, features = ["adafruit_rgb_13x9"] }
+bmp388 = { git = "https://github.com/dragazo/bmp388", default-features = false }
+veml6030 = { git = "https://github.com/dragazo/veml6030-rs", default-features = false }
 
 [build-dependencies]
 embuild = "0.31"

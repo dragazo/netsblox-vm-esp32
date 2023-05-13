@@ -160,3 +160,39 @@ This sensor communicates over I2C, so make sure you configured I2C for the NetsB
     }
   ]
 }
+```
+
+### LIS3DH
+
+The LIS3DH is a 3-axis accelerometer.
+With this, you can measure how quickly something accelerates (like a falling object).
+Or, if the object is stationary, this lets you tell the orientation of the device by seeing the direction of gravity (down) relative to the sensor.
+This sensor communicates over I2C, so make sure you configured I2C for the NetsBloxVM board.
+
+```json
+{
+  "lis3dhs": [
+    {
+      "name": <string>,
+      "i2c_addr": <number>
+    }
+  ]
+}
+```
+
+### VEML7700
+
+The VEML7700 is a high-precision light level sensor.
+With this, you can tell if the lights are on in a room, or tell daytime vs. nighttime.
+This sensor communicates over I2C, so make sure you configured I2C for the NetsBloxVM board.
+
+```json
+{
+  "vaml7700s": [
+    {
+      "name": <string>,
+      "i2c_addr": <number>
+    }
+  ]
+}
+```

@@ -387,19 +387,47 @@ pub struct SyscallPeripherals {
     pub i2c: I2C0,
 }
 
-pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &PeripheralsConfig) -> Result<(Config<C, EspSystem<C>>, Vec<SyscallMenu>), PeripheralError> {
-    let mut pins = GpioManager::new(peripherals.pins);
-    let mut pwms = PwmManager::new(peripherals.ledc)?;
+pub struct InitError {
+    pub context: String,
+    pub error: PeripheralError,
+}
 
+pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &PeripheralsConfig) -> (Config<C, EspSystem<C>>, Vec<SyscallMenu>, Vec<InitError>) {
     let mut syscalls = vec![];
+    let mut errors = vec![];
+
+    let mut pins = GpioManager::new(peripherals.pins);
+    let mut pwms = match PwmManager::new(peripherals.ledc) {
+        Ok(x) => Some(x),
+        Err(e) => {
+            errors.push(InitError { context: "PWM".into(), error: e.into() });
+            None
+        }
+    };
 
     // -------------------------------------------------------------
 
     let i2c = match &peripherals_config.i2c {
         Some(i2c) => {
-            let sda = pins.take_convert(i2c.gpio_sda, AnyPin::try_into_input_output)?;
-            let scl = pins.take_convert(i2c.gpio_scl, AnyPin::try_into_input_output)?;
-            Some(SharedI2c::new(I2cDriver::new(peripherals.i2c, sda, scl, &Default::default())?))
+            match pins.take_convert(i2c.gpio_sda, AnyPin::try_into_input_output) {
+                Ok(sda) => match pins.take_convert(i2c.gpio_scl, AnyPin::try_into_input_output) {
+                    Ok(scl) => match I2cDriver::new(peripherals.i2c, sda, scl, &Default::default()) {
+                        Ok(i2c) => Some(SharedI2c::new(i2c)),
+                        Err(e) => {
+                            errors.push(InitError { context: "I2C".into(), error: e.into() });
+                            None
+                        }
+                    }
+                    Err(e) => {
+                        errors.push(InitError { context: "I2C gpio_scl".into(), error: e.into() });
+                        None
+                    }
+                }
+                Err(e) => {
+                    errors.push(InitError { context: "I2C gpio_sda".into(), error: e.into() });
+                    None
+                }
+            }
         }
         None => None,
     };
@@ -421,10 +449,18 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.digital_ins.len());
 
         for entry in peripherals_config.digital_ins.iter() {
-            let pin = PinDriver::input(pins.take_convert(entry.gpio, AnyPin::try_into_input)?)?;
-            if res.insert(entry.name.clone(), DigitalInController { pin, negated: entry.negated }).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            let pin = match pins.take_convert(entry.gpio, AnyPin::try_into_input).and_then(|x| PinDriver::input(x).map_err(Into::into)) {
+                Ok(x) => x,
+                Err(error) => {
+                    errors.push(InitError { context: format!("digital_ins {} gpio", entry.name), error });
+                    continue
+                }
+            };
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("digital_ins {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), DigitalInController { pin, negated: entry.negated });
             menu_content.push(menu_entries!("DigitalIn", entry.name => "get"));
         }
         if !menu_content.is_empty() {
@@ -439,10 +475,18 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.digital_outs.len());
 
         for entry in peripherals_config.digital_outs.iter() {
-            let pin = PinDriver::output(pins.take_convert(entry.gpio, AnyPin::try_into_output)?)?;
-            if res.insert(entry.name.clone(), DigitalOutController { pin, negated: entry.negated }).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            let pin = match pins.take_convert(entry.gpio, AnyPin::try_into_output).and_then(|x| PinDriver::output(x).map_err(Into::into)) {
+                Ok(x) => x,
+                Err(error) => {
+                    errors.push(InitError { context: format!("digital_outs {} gpio", entry.name), error });
+                    continue
+                }
+            };
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("digital_outs {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), DigitalOutController { pin, negated: entry.negated });
             menu_content.push(menu_entries!("DigitalOut", entry.name => "set"));
         }
         if !menu_content.is_empty() {
@@ -460,28 +504,52 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let make_menu_entries = |name: &str| menu_entries!("Motor", name => "setPower");
 
         for entry in peripherals_config.motors.iter() {
-            let positive = pwms.take(pins.take_convert(entry.gpio_pos, AnyPin::try_into_output)?)?;
-            let negative = pwms.take(pins.take_convert(entry.gpio_neg, AnyPin::try_into_output)?)?;
+            let pwms = match pwms.as_mut() {
+                Some(x) => x,
+                None => {
+                    errors.push(InitError { context: format!("motors {}", entry.name), error: PeripheralError::PwmOutOfChannels });
+                    continue
+                }
+            };
+            let positive = match pins.take_convert(entry.gpio_pos, AnyPin::try_into_output).and_then(|x| pwms.take(x)) {
+                Ok(x) => x,
+                Err(error) => {
+                    errors.push(InitError { context: format!("motors {} gpio_pos", entry.name), error });
+                    continue
+                }
+            };
+            let negative = match pins.take_convert(entry.gpio_neg, AnyPin::try_into_output).and_then(|x| pwms.take(x)) {
+                Ok(x) => x,
+                Err(error) => {
+                    errors.push(InitError { context: format!("motors {} gpio_neg", entry.name), error });
+                    continue
+                }
+            };
             let motor = Rc::new(RefCell::new(MotorController { positive, negative }));
-            if motors.insert(entry.name.clone(), motor.clone()).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            if motors.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("motors {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
-            if res.insert(entry.name.clone(), vec![motor]).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
-            }
+            motors.insert(entry.name.clone(), motor.clone());
+            res.insert(entry.name.clone(), vec![motor]);
             menu_content.push(make_menu_entries(&entry.name));
         }
-        for entry in peripherals_config.motor_groups.iter() {
+        'group: for entry in peripherals_config.motor_groups.iter() {
             let mut motor_group = Vec::with_capacity(entry.motors.len());
             for name in entry.motors.iter() {
                 match motors.get(name) {
                     Some(x) => motor_group.push(x.clone()),
-                    None => return Err(PeripheralError::NameUnknown { name: name.clone() }),
+                    None => {
+                        errors.push(InitError { context: format!("motor_groups {}", entry.name), error: PeripheralError::NameUnknown { name: name.clone() } });
+                        continue 'group
+                    }
                 }
             }
-            if res.insert(entry.name.clone(), motor_group).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("motor_groups {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), motor_group);
             menu_content.push(make_menu_entries(&entry.name));
         }
         if !menu_content.is_empty() {
@@ -496,13 +564,25 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.hcsr04s.len());
 
         for entry in peripherals_config.hcsr04s.iter() {
-            let controller = HCSR04Controller {
-                trigger: PinDriver::output(pins.take_convert(entry.gpio_trigger, AnyPin::try_into_output)?)?,
-                echo: PinDriver::input(pins.take_convert(entry.gpio_echo, AnyPin::try_into_input)?)?,
+            let trigger = match pins.take_convert(entry.gpio_trigger, AnyPin::try_into_output).and_then(|x| PinDriver::output(x).map_err(Into::into)) {
+                Ok(x) => x,
+                Err(error) => {
+                    errors.push(InitError { context: format!("hcsr04s {} gpio_trigger", entry.name), error });
+                    continue
+                }
             };
-            if res.insert(entry.name.clone(), controller).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            let echo = match pins.take_convert(entry.gpio_echo, AnyPin::try_into_input).and_then(|x| PinDriver::input(x).map_err(Into::into)) {
+                Ok(x) => x,
+                Err(error) => {
+                    errors.push(InitError { context: format!("hcsr04s {} gpio_echo", entry.name), error });
+                    continue
+                }
+            };
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("hcsr04s {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), HCSR04Controller { trigger, echo });
             menu_content.push(menu_entries!("HCSR04", entry.name => "getDistance"));
         }
         if !menu_content.is_empty() {
@@ -517,10 +597,25 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.max30205s.len());
 
         for entry in peripherals_config.max30205s.iter() {
-            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
-            if res.insert(entry.name.clone(), max30205::MAX30205::new(entry.i2c_addr, i2c)?).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            let i2c = match i2c.clone() {
+                Some(x) => x,
+                None => {
+                    errors.push(InitError { context: format!("max30205s {}", entry.name), error: PeripheralError::I2cNotConfigured });
+                    continue
+                }
+            };
+            let device = match max30205::MAX30205::new(entry.i2c_addr, i2c) {
+                Ok(x) => x,
+                Err(e) => {
+                    errors.push(InitError { context: format!("max30205s {}", entry.name), error: e.into() });
+                    continue
+                }
+            };
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("max30205 {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), device);
             menu_content.push(menu_entries!("MAX30205", entry.name => "getTemperature"));
         }
         if !menu_content.is_empty() {
@@ -535,17 +630,37 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.is31fl3741s.len());
 
         for entry in peripherals_config.is31fl3741s.iter() {
-            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let i2c = match i2c.clone() {
+                Some(x) => x,
+                None => {
+                    errors.push(InitError { context: format!("is31fl3741s {}", entry.name), error: PeripheralError::I2cNotConfigured });
+                    continue
+                }
+            };
             let mut device = is31fl3741::devices::AdafruitRGB13x9::configure(i2c, entry.i2c_addr);
             match device.setup(&mut Ets) {
                 Ok(()) => (),
-                Err(is31fl3741::Error::I2cError(e)) => return Err(e.into()),
-                Err(_) => panic!(),
+                Err(is31fl3741::Error::I2cError(e)) => {
+                    errors.push(InitError { context: format!("is31fl3741s {}", entry.name), error: e.into() });
+                    continue
+                }
+                Err(e) => {
+                    errors.push(InitError { context: format!("is31fl3741s {}", entry.name), error: PeripheralError::Other { cause: format!("{e:?}") } });
+                    continue
+                }
             }
-            device.set_scaling(0xff)?;
-            if res.insert(entry.name.clone(), device).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            match device.set_scaling(0xff) {
+                Ok(()) => (),
+                Err(e) => {
+                    errors.push(InitError { context: format!("is31fl3741s {}", entry.name), error: e.into() });
+                    continue
+                }
             }
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("is31fl3741s {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
+            }
+            res.insert(entry.name.clone(), device);
             menu_content.push(menu_entries!("IS31FL3741", entry.name => "setPixel"));
         }
         if !menu_content.is_empty() {
@@ -560,12 +675,32 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.bmp388s.len());
 
         for entry in peripherals_config.bmp388s.iter() {
-            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
-            let mut device = bmp388::BMP388::new(i2c, entry.i2c_addr, &mut Ets)?;
-            device.set_power_control(bmp388::PowerControl { pressure_enable: true, temperature_enable: true, mode: bmp388::PowerMode::Normal })?;
-            if res.insert(entry.name.clone(), device).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            let i2c = match i2c.clone() {
+                Some(x) => x,
+                None => {
+                    errors.push(InitError { context: format!("bmp388s {}", entry.name), error: PeripheralError::I2cNotConfigured });
+                    continue
+                }
+            };
+            let mut device = match bmp388::BMP388::new(i2c, entry.i2c_addr, &mut Ets) {
+                Ok(x) => x,
+                Err(e) => {
+                    errors.push(InitError { context: format!("bmp388s {}", entry.name), error: e.into() });
+                    continue
+                }
+            };
+            match device.set_power_control(bmp388::PowerControl { pressure_enable: true, temperature_enable: true, mode: bmp388::PowerMode::Normal }) {
+                Ok(()) => (),
+                Err(e) => {
+                    errors.push(InitError { context: format!("bmp388s {}", entry.name), error: e.into() });
+                    continue
+                }
             }
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("bmp388s {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
+            }
+            res.insert(entry.name.clone(), device);
             menu_content.push(menu_entries!("BMP388", entry.name => "getPressure", "getTemperature"));
         }
         if !menu_content.is_empty() {
@@ -580,15 +715,29 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.lis3dhs.len());
 
         for entry in peripherals_config.lis3dhs.iter() {
-            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let i2c = match i2c.clone() {
+                Some(x) => x,
+                None => {
+                    errors.push(InitError { context: format!("lis3dhs {}", entry.name), error: PeripheralError::I2cNotConfigured });
+                    continue
+                }
+            };
             let device = match lis3dh::Lis3dh::new_i2c(i2c, lis3dh::SlaveAddr(entry.i2c_addr)) {
                 Ok(x) => x,
-                Err(lis3dh::Error::Bus(e)) => return Err(e.into()),
-                Err(e) => return Err(PeripheralError::Other { cause: format!("{e:?}") }),
+                Err(lis3dh::Error::Bus(e)) => {
+                    errors.push(InitError { context: format!("lis3dhs {}", entry.name), error: e.into() });
+                    continue
+                }
+                Err(e) => {
+                    errors.push(InitError { context: format!("lis3dhs {}", entry.name), error: PeripheralError::Other { cause: format!("{e:?}") } });
+                    continue
+                }
             };
-            if res.insert(entry.name.clone(), device).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("lis3dhs {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), device);
             menu_content.push(menu_entries!("LIS3DH", entry.name => "getAcceleration"));
         }
         if !menu_content.is_empty() {
@@ -603,15 +752,26 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         let mut menu_content = Vec::with_capacity(peripherals_config.veml7700s.len());
 
         for entry in peripherals_config.veml7700s.iter() {
-            let i2c = i2c.clone().ok_or(PeripheralError::I2cNotConfigured)?;
+            let i2c = match i2c.clone() {
+                Some(x) => x,
+                None => {
+                    errors.push(InitError { context: format!("veml7700s {}", entry.name), error: PeripheralError::I2cNotConfigured });
+                    continue
+                }
+            };
             let mut device = veml6030::Veml6030::new(i2c, veml6030::SlaveAddr(entry.i2c_addr));
             match device.enable() {
                 Ok(()) => (),
-                Err(veml6030::Error::I2C(e)) => return Err(e.into()),
+                Err(veml6030::Error::I2C(e)) => {
+                    errors.push(InitError { context: format!("veml7700s {}", entry.name), error: e.into() });
+                    continue
+                }
             }
-            if res.insert(entry.name.clone(), device).is_some() {
-                return Err(PeripheralError::NameAlreadyTaken { name: entry.name.clone() });
+            if res.contains_key(&entry.name) {
+                errors.push(InitError { context: format!("veml7700s {}", entry.name), error: PeripheralError::NameAlreadyTaken { name: entry.name.clone() } });
+                continue
             }
+            res.insert(entry.name.clone(), device);
             menu_content.push(menu_entries!("VEML7700", entry.name => "getLight"));
         }
         if !menu_content.is_empty() {
@@ -820,5 +980,5 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
         command: None,
     };
 
-    Ok((config, syscalls))
+    (config, syscalls, errors)
 }
