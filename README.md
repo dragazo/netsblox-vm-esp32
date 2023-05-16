@@ -20,7 +20,7 @@ You'll need the `ldproxy` linker installed, as well as `espflash`.
 
 ```sh
 cargo install ldproxy
-cargo install espflash
+cargo install espflash@2.0.0-rc.3
 ```
 
 You'll need to generate an SSL certificate for the internal HTTPS server.
