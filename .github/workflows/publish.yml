@@ -10,13 +10,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - run: sudo apt install libudev-dev -y
+      - run: sudo apt install -y libudev-dev
       - uses: actions/checkout@v3
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          override: true
-      - run: cargo install espup
-      - run: espup install
+      - uses: esp-rs/xtensa-toolchain@v1.5
       - run: cargo install espflash@2.0.0-rc.3
+      - run: openssl req -newkey rsa:2048 -nodes -keyout privkey.pem -x509 -days 3650 -out cacert.pem -subj "/CN=NetsBlox VM ESP32"
       - run: cargo +esp build --release
