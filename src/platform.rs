@@ -249,6 +249,7 @@ impl<C: CustomTypes<S>, S: System<C>> From<EntityKind<'_, '_, C, S>> for EntityS
 pub enum Intermediate {
     Json(Json),
     Image(Vec<u8>),
+    Audio(Vec<u8>),
 }
 impl IntermediateType for Intermediate {
     fn from_json(json: Json) -> Self {
@@ -256,6 +257,9 @@ impl IntermediateType for Intermediate {
     }
     fn from_image(img: Vec<u8>) -> Self {
         Self::Image(img)
+    }
+    fn from_audio(audio: Vec<u8>) -> Self {
+        Self::Audio(audio)
     }
 }
 
@@ -265,10 +269,11 @@ impl CustomTypes<EspSystem<Self>> for C {
     type EntityState = EntityState;
     type Intermediate = Intermediate;
 
-    fn from_intermediate<'gc>(mc: gc_arena::MutationContext<'gc, '_>, value: Self::Intermediate) -> Result<Value<'gc, Self, EspSystem<Self>>, ErrorCause<Self, EspSystem<Self>>> {
+    fn from_intermediate<'gc>(mc: &gc_arena::Mutation<'gc>, value: Self::Intermediate) -> Result<Value<'gc, Self, EspSystem<Self>>, ErrorCause<Self, EspSystem<Self>>> {
         Ok(match value {
             Intermediate::Json(x) => Value::from_json(mc, x)?,
             Intermediate::Image(x) => Value::Image(Rc::new(x)),
+            Intermediate::Audio(x) => Value::Audio(Rc::new(x)),
         })
     }
 }

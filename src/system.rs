@@ -16,9 +16,10 @@ use rand::{Rng, SeedableRng};
 use rand::distributions::uniform::{SampleUniform, SampleRange};
 use rand_chacha::ChaChaRng;
 
-use netsblox_vm::runtime::{System, ErrorCause, Value, Entity, MaybeAsync, Request, Command, Config, AsyncResult, RequestStatus, CommandStatus, ToJsonError, CustomTypes, IntermediateType, Key, OutgoingMessage, IncomingMessage};
+use netsblox_vm::runtime::{System, ErrorCause, Value, Entity, MaybeAsync, Request, Command, Config, AsyncResult, RequestStatus, CommandStatus, ToJsonError, CustomTypes, IntermediateType, Key, OutgoingMessage, IncomingMessage, SysTime};
 use netsblox_vm::json::{serde_json, Json, JsonMap, json, parse_json, parse_json_slice};
-use netsblox_vm::gc::MutationContext;
+use netsblox_vm::gc::Mutation;
+use netsblox_vm::real_time::OffsetDateTime;
 
 use crate::http::*;
 
@@ -107,7 +108,6 @@ struct Context {
 pub struct EspSystem<C: CustomTypes<Self>> {
     config: Config<C, Self>,
     context: Arc<Context>,
-    start_time: Instant,
     rng: Mutex<ChaChaRng>,
 
     rpc_request_sender: Sender<RpcRequest<C>>,
@@ -296,7 +296,6 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         EspSystem {
             config, context, message_replies, message_sender, message_receiver, rpc_request_sender,
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
-            start_time: Instant::now(),
         }
     }
 
@@ -313,15 +312,16 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
     type ExternReplyKey = ExternReplyKey;
     type InternReplyKey = InternReplyKey;
 
-    fn rand<T, R>(&self, range: R) -> Result<T, ErrorCause<C, Self>> where T: SampleUniform, R: SampleRange<T> {
-        Ok(self.rng.lock().unwrap().gen_range(range))
+    fn rand<T, R>(&self, range: R) -> T where T: SampleUniform, R: SampleRange<T> {
+        self.rng.lock().unwrap().gen_range(range)
     }
 
-    fn time_ms(&self) -> Result<u64, ErrorCause<C, Self>> {
-        Ok(self.start_time.elapsed().as_millis() as u64)
+    fn time(&self) -> SysTime {
+        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        SysTime::Real { local: OffsetDateTime::from_unix_timestamp_nanos(t as i128).unwrap() }
     }
 
-    fn perform_request<'gc>(&self, mc: MutationContext<'gc, '_>, request: Request<'gc, C, Self>, entity: &mut Entity<'gc, C, Self>) -> Result<MaybeAsync<Result<Value<'gc, C, Self>, String>, Self::RequestKey>, ErrorCause<C, Self>> {
+    fn perform_request<'gc>(&self, mc: &Mutation<'gc>, request: Request<'gc, C, Self>, entity: &mut Entity<'gc, C, Self>) -> Result<MaybeAsync<Result<Value<'gc, C, Self>, String>, Self::RequestKey>, ErrorCause<C, Self>> {
         Ok(match self.config.request.as_ref() {
             Some(handler) => {
                 let key = RequestKey(Arc::new(Mutex::new(AsyncResult::new())));
@@ -333,7 +333,7 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
             None => return Err(ErrorCause::NotSupported { feature: request.feature() }),
         })
     }
-    fn poll_request<'gc>(&self, mc: MutationContext<'gc, '_>, key: &Self::RequestKey, _entity: &mut Entity<'gc, C, Self>) -> Result<AsyncResult<Result<Value<'gc, C, Self>, String>>, ErrorCause<C, Self>> {
+    fn poll_request<'gc>(&self, mc: &Mutation<'gc>, key: &Self::RequestKey, _entity: &mut Entity<'gc, C, Self>) -> Result<AsyncResult<Result<Value<'gc, C, Self>, String>>, ErrorCause<C, Self>> {
         Ok(match key.poll() {
             AsyncResult::Completed(Ok(x)) => AsyncResult::Completed(Ok(C::from_intermediate(mc, x)?)),
             AsyncResult::Completed(Err(x)) => AsyncResult::Completed(Err(x)),
@@ -342,7 +342,7 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
         })
     }
 
-    fn perform_command<'gc>(&self, mc: MutationContext<'gc, '_>, command: Command<'gc, '_, C, Self>, entity: &mut Entity<'gc, C, Self>) -> Result<MaybeAsync<Result<(), String>, Self::CommandKey>, ErrorCause<C, Self>> {
+    fn perform_command<'gc>(&self, mc: &Mutation<'gc>, command: Command<'gc, '_, C, Self>, entity: &mut Entity<'gc, C, Self>) -> Result<MaybeAsync<Result<(), String>, Self::CommandKey>, ErrorCause<C, Self>> {
         Ok(match self.config.command.as_ref() {
             Some(handler) => {
                 let key = CommandKey(Arc::new(Mutex::new(AsyncResult::new())));
@@ -354,7 +354,7 @@ impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
             None => return Err(ErrorCause::NotSupported { feature: command.feature() }),
         })
     }
-    fn poll_command<'gc>(&self, _mc: MutationContext<'gc, '_>, key: &Self::CommandKey, _entity: &mut Entity<'gc, C, Self>) -> Result<AsyncResult<Result<(), String>>, ErrorCause<C, Self>> {
+    fn poll_command<'gc>(&self, _mc: &Mutation<'gc>, key: &Self::CommandKey, _entity: &mut Entity<'gc, C, Self>) -> Result<AsyncResult<Result<(), String>>, ErrorCause<C, Self>> {
         Ok(key.poll())
     }
 

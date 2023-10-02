@@ -28,7 +28,7 @@ use netsblox_vm::template::{ExtensionArgs, EMPTY_PROJECT};
 use netsblox_vm::process::ErrorSummary;
 use netsblox_vm::project::{Input, Project, IdleAction, ProjectStep};
 use netsblox_vm::bytecode::{ByteCode, Locations, CompileError};
-use netsblox_vm::gc::{Collect, GcCell, Rootable, Arena};
+use netsblox_vm::gc::{Collect, Gc, RefLock, Rootable, Arena};
 use netsblox_vm::json::serde_json;
 use netsblox_vm::runtime::{System, Config, Command, CommandStatus, CustomTypes, Key};
 use netsblox_vm::ast;
@@ -58,16 +58,16 @@ const ERROR_BUFFER_SIZE: usize = 32 * 1024;
 #[derive(Collect)]
 #[collect(no_drop, bound = "")]
 struct Env<'gc, C: CustomTypes<S>, S: System<C>> {
-                               proj: GcCell<'gc, Project<'gc, C, S>>,
+                               proj: Gc<'gc, RefLock<Project<'gc, C, S>>>,
     #[collect(require_static)] locs: Locations,
 }
-type EnvArena<C, S> = Arena<Rootable![Env<'gc, C, S>]>;
+type EnvArena<C, S> = Arena<Rootable![Env<'_, C, S>]>;
 
 fn get_env<C: CustomTypes<S>, S: System<C>>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<C, S>, CompileError> {
     let (bytecode, init_info, locs, _) = ByteCode::compile(role).unwrap();
     Ok(EnvArena::new(Default::default(), |mc| {
         let proj = Project::from_init(mc, &init_info, Rc::new(bytecode), Default::default(), system);
-        Env { proj: GcCell::allocate(mc, proj), locs }
+        Env { proj: Gc::new(mc, RefLock::new(proj)), locs }
     }))
 }
 
@@ -608,7 +608,7 @@ impl Executor {
             get_env(&role, system.clone()).unwrap()
         };
         running_env.mutate(|mc, running_env| {
-            running_env.proj.write(mc).input(Input::Start);
+            running_env.proj.borrow_mut(mc).input(&mc, Input::Start);
         });
 
         tee_println!(&mut *self.runtime.lock().unwrap() => "\n>>> starting project (public id: {})\n", system.get_public_id());
@@ -639,7 +639,7 @@ impl Executor {
                         self.runtime.lock().unwrap().running = true;
                     }
                     running_env.mutate(|mc, running_env| {
-                        running_env.proj.write(mc).input(x);
+                        running_env.proj.borrow_mut(mc).input(&mc, x);
                     });
                 }
                 None => (),
@@ -649,7 +649,7 @@ impl Executor {
             if !running { continue }
 
             running_env.mutate(|mc, running_env| {
-                let mut proj = running_env.proj.write(mc);
+                let mut proj = running_env.proj.borrow_mut(mc);
                 for _ in 0..STEP_BATCH_SIZE {
                     let res = proj.step(mc);
                     if let ProjectStep::Error { error, proc } = &res {
