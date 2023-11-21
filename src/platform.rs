@@ -5,10 +5,9 @@ use std::sync::Arc;
 use std::rc::Rc;
 use std::iter;
 
-use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ErrorCause, Config, Request, RequestStatus};
-use netsblox_vm::json::{Json, json};
+use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ProcessKind, Config, Request, RequestStatus, SimpleValue, Number};
 use netsblox_vm::gc::gc_arena;
-use netsblox_vm::runtime::{CustomTypes, IntermediateType, Key};
+use netsblox_vm::runtime::{CustomTypes, Key};
 use netsblox_vm::template::SyscallMenu;
 
 use esp_idf_sys::EspError;
@@ -246,20 +245,10 @@ impl<C: CustomTypes<S>, S: System<C>> From<EntityKind<'_, '_, C, S>> for EntityS
     }
 }
 
-pub enum Intermediate {
-    Json(Json),
-    Image(Vec<u8>),
-    Audio(Vec<u8>),
-}
-impl IntermediateType for Intermediate {
-    fn from_json(json: Json) -> Self {
-        Self::Json(json)
-    }
-    fn from_image(img: Vec<u8>) -> Self {
-        Self::Image(img)
-    }
-    fn from_audio(audio: Vec<u8>) -> Self {
-        Self::Audio(audio)
+pub struct ProcessState;
+impl<C: CustomTypes<S>, S: System<C>> From<ProcessKind<'_, '_, C, S>> for ProcessState {
+    fn from(_: ProcessKind<'_, '_, C, S>) -> Self {
+        ProcessState
     }
 }
 
@@ -267,14 +256,11 @@ pub struct C;
 impl CustomTypes<EspSystem<Self>> for C {
     type NativeValue = NativeValue;
     type EntityState = EntityState;
-    type Intermediate = Intermediate;
+    type ProcessState = ProcessState;
+    type Intermediate = SimpleValue;
 
-    fn from_intermediate<'gc>(mc: &gc_arena::Mutation<'gc>, value: Self::Intermediate) -> Result<Value<'gc, Self, EspSystem<Self>>, ErrorCause<Self, EspSystem<Self>>> {
-        Ok(match value {
-            Intermediate::Json(x) => Value::from_json(mc, x)?,
-            Intermediate::Image(x) => Value::Image(Rc::new(x)),
-            Intermediate::Audio(x) => Value::Audio(Rc::new(x)),
-        })
+    fn from_intermediate<'gc>(mc: &gc_arena::Mutation<'gc>, value: Self::Intermediate) -> Value<'gc, Self, EspSystem<Self>> {
+        Value::from_simple(mc, value)
     }
 }
 
@@ -792,7 +778,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
     });
 
     let config = Config::<C, _> {
-        request: Some(Rc::new(move |_, _, key, request, _| match &request {
+        request: Some(Rc::new(move |_, key, request, _| match &request {
             Request::Syscall { name, args } => {
                 let (peripheral_type, peripheral, function) = {
                     let mut tokens = name.split('.');
@@ -806,7 +792,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                     ($id:ident) => { key.complete(Err(format!(concat!("unknown {} ", stringify!($id), ": {:?}"), peripheral_type, $id))) }
                 }
                 macro_rules! ok {
-                    () => { key.complete(Ok(Intermediate::Json(json!("OK")))); }
+                    () => { key.complete(Ok("OK".to_owned().into())); }
                 }
 
                 macro_rules! count_expected {
@@ -829,7 +815,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                     }};
                     (($index:expr) bool) => {{
                         let index = $index;
-                        match args[index].to_bool() {
+                        match args[index].as_bool() {
                             Ok(x) => x,
                             Err(e) => {
                                 key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected a bool for arg {}, but got {:?}", index + 1, e.got)));
@@ -839,7 +825,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                     }};
                     (($index:expr) f64) => {{
                         let index = $index;
-                        match args[index].to_number() {
+                        match args[index].as_number() {
                             Ok(x) => x.get(),
                             Err(e) => {
                                 key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected a number for arg {}, but got {:?}", index + 1, e.got)));
@@ -875,7 +861,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         Some(handle) => match function {
                             "get" => {
                                 parse_args!();
-                                key.complete(Ok(Intermediate::Json(json!(handle.get_value()))));
+                                key.complete(Ok(handle.get_value().into()));
                             }
                             _ => unknown!(function),
                         }
@@ -909,7 +895,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         Some(handle) => match function {
                             "getDistance" => {
                                 parse_args!();
-                                key.complete(Ok(Intermediate::Json(json!(handle.get_distance().unwrap()))));
+                                key.complete(Ok(Number::new(handle.get_distance().unwrap()).unwrap().into()));
                             }
                             _ => unknown!(function),
                         }
@@ -919,7 +905,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         Some(handle) => match function {
                             "getTemperature" => {
                                 parse_args!();
-                                key.complete(Ok(Intermediate::Json(json!(handle.get_temperature().unwrap()))));
+                                key.complete(Ok(Number::new(handle.get_temperature().unwrap()).unwrap().into()));
                             }
                             _ => unknown!(function),
                         }
@@ -944,11 +930,11 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         Some(handle) => match function {
                             "getPressure" => {
                                 parse_args!();
-                                key.complete(Ok(Intermediate::from_json(json!(handle.sensor_values().unwrap().pressure))));
+                                key.complete(Ok(Number::new(handle.sensor_values().unwrap().pressure).unwrap().into()));
                             }
                             "getTemperature" => {
                                 parse_args!();
-                                key.complete(Ok(Intermediate::from_json(json!(handle.sensor_values().unwrap().temperature))));
+                                key.complete(Ok(Number::new(handle.sensor_values().unwrap().temperature).unwrap().into()));
                             }
                             _ => unknown!(function),
                         }
@@ -959,7 +945,11 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                             "getAcceleration" => {
                                 parse_args!();
                                 let vals = lis3dh::accelerometer::Accelerometer::accel_norm(handle).unwrap();
-                                key.complete(Ok(Intermediate::from_json(json!([vals.x, vals.y, vals.z]))));
+                                key.complete(Ok(SimpleValue::List(vec![
+                                    Number::new(vals.x as f64).unwrap().into(),
+                                    Number::new(vals.y as f64).unwrap().into(),
+                                    Number::new(vals.z as f64).unwrap().into(),
+                                ])));
                             }
                             _ => unknown!(function),
                         }
@@ -969,7 +959,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         Some(handle) => match function {
                             "getLight" => {
                                 parse_args!();
-                                key.complete(Ok(Intermediate::from_json(json!(handle.read_lux().unwrap()))));
+                                key.complete(Ok(Number::new(handle.read_lux().unwrap() as f64).unwrap().into()));
                             }
                             _ => unknown!(function),
                         }

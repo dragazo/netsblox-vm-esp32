@@ -1,7 +1,7 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use std::sync::mpsc::{Sender, Receiver, channel};
 use std::rc::Rc;
 use std::thread;
@@ -16,65 +16,20 @@ use rand::{Rng, SeedableRng};
 use rand::distributions::uniform::{SampleUniform, SampleRange};
 use rand_chacha::ChaChaRng;
 
-use netsblox_vm::runtime::{System, ErrorCause, Value, Entity, MaybeAsync, Request, Command, Config, AsyncResult, RequestStatus, CommandStatus, ToJsonError, CustomTypes, IntermediateType, Key, OutgoingMessage, IncomingMessage, SysTime};
+use netsblox_vm::runtime::{System, ErrorCause, Value, Request, Command, Config, AsyncResult, RequestStatus, CommandStatus, CustomTypes, Key, OutgoingMessage, IncomingMessage, SysTime, SimpleValue, Image, Audio, Precision, ExternReplyKey, InternReplyKey};
 use netsblox_vm::json::{serde_json, Json, JsonMap, json, parse_json, parse_json_slice};
 use netsblox_vm::gc::Mutation;
-use netsblox_vm::real_time::OffsetDateTime;
+use netsblox_vm::process::Process;
+use netsblox_vm::std_util::{AsyncKey, NetsBloxContext, RpcRequest, ReplyEntry, Clock};
 
 use crate::http::*;
 
-const MESSAGE_REPLY_TIMEOUT_MS: u32 = 1500;
+const MESSAGE_REPLY_TIMEOUT: Duration = Duration::from_millis(1500);
 
-#[derive(Debug, Clone, PartialOrd, Ord, PartialEq, Eq)]
-pub struct ExternReplyKey {
-    request_id: String,
-}
-#[derive(Debug, Clone)]
-pub struct InternReplyKey {
-    src_id: String,
-    request_id: String,
-}
-
-struct ReplyEntry {
-    timestamp: Instant,
-    value: Option<Json>,
-}
-
-struct RpcRequest<C: CustomTypes<EspSystem<C>>> {
-    service: String,
-    rpc: String,
-    args: BTreeMap<String, Json>,
-    key: RequestKey<C>,
-}
-
-pub struct RequestKey<C: CustomTypes<EspSystem<C>>>(Arc<Mutex<AsyncResult<Result<C::Intermediate, String>>>>);
-impl<C: CustomTypes<EspSystem<C>>> RequestKey<C> {
-    pub(crate) fn poll(&self) -> AsyncResult<Result<C::Intermediate, String>> {
-        self.0.lock().unwrap().poll()
-    }
-}
-impl<C: CustomTypes<EspSystem<C>>> Key<Result<C::Intermediate, String>> for RequestKey<C> {
-    fn complete(self, value: Result<C::Intermediate, String>) {
-        assert!(self.0.lock().unwrap().complete(value).is_ok())
-    }
-}
-
-pub struct CommandKey(Arc<Mutex<AsyncResult<Result<(), String>>>>);
-impl CommandKey {
-    pub(crate) fn poll(&self) -> AsyncResult<Result<(), String>> {
-        self.0.lock().unwrap().poll()
-    }
-}
-impl Key<Result<(), String>> for CommandKey {
-    fn complete(self, value: Result<(), String>) {
-        assert!(self.0.lock().unwrap().complete(value).is_ok())
-    }
-}
-
-fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, rpc: &str, args: &BTreeMap<String, Json>) -> Result<C::Intermediate, String> {
+fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &NetsBloxContext, service: &str, rpc: &str, args: &Vec<(String, Json)>) -> Result<SimpleValue, String> {
     let time = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
-    let url = format!("{base_url}/services/{service}/{rpc}?uuid={client_id}&projectId={project_id}&roleId={role_id}&t={time}",
-        base_url = context.base_url, client_id = context.client_id, project_id = context.project_id, role_id = context.role_id);
+    let url = format!("{services_url}/{service}/{rpc}?clientId={client_id}&t={time}",
+        services_url = context.services_url, client_id = context.client_id);
 
     let Response { status, body, content_type } = match http_request(Method::Post, &url, &[("Content-Type", "application/json")], serde_json::to_string(&args).unwrap().as_bytes()) {
         Ok(x) => x,
@@ -85,41 +40,43 @@ fn call_rpc<C: CustomTypes<S>, S: System<C>>(context: &Context, service: &str, r
         return Err(String::from_utf8(body).ok().unwrap_or_else(|| "Received ill-formed error message".into()));
     }
 
-    if content_type.as_deref().unwrap_or("unknown").contains("image/") {
-        Ok(C::Intermediate::from_image(body))
-    } else if let Ok(x) = parse_json_slice::<Json>(&body) {
-        Ok(C::Intermediate::from_json(x))
+    let content_type = content_type.as_deref().unwrap_or("unknown");
+    if content_type.contains("image/") {
+        Ok(SimpleValue::Image(Image { content: body, center: None }))
+    } else if content_type.contains("audio/") {
+        Ok(SimpleValue::Audio(Audio { content: body }))
+    } else if let Some(x) = parse_json_slice::<Json>(&body).ok() {
+        SimpleValue::from_netsblox_json(x).map_err(|e| format!("Received ill-formed success value: {e:?}"))
     } else if let Ok(x) = String::from_utf8(body) {
-        Ok(C::Intermediate::from_json(Json::String(x)))
+        Ok(SimpleValue::String(x))
     } else {
         Err("Received ill-formed success value".into())
     }
 }
 
-struct Context {
-    base_url: String,
-    client_id: String,
-    project_name: String,
-
-    project_id: String,
-    role_id: String,
-    role_name: String,
-}
 pub struct EspSystem<C: CustomTypes<Self>> {
     config: Config<C, Self>,
-    context: Arc<Context>,
+    context: Arc<NetsBloxContext>,
     rng: Mutex<ChaChaRng>,
+    clock: Arc<Clock>,
 
-    rpc_request_sender: Sender<RpcRequest<C>>,
+    rpc_request_sender: Sender<RpcRequest<C, Self>>,
 
     message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>>,
-    message_sender: Sender<OutgoingMessage<C, Self>>,
-    message_receiver: Receiver<IncomingMessage<C, Self>>,
+    message_sender: Sender<OutgoingMessage>,
+    message_receiver: Receiver<IncomingMessage>,
 }
 impl<C: CustomTypes<Self>> EspSystem<C> {
-    pub fn new(base_url: String, project_name: Option<&str>, config: Config<C, Self>) -> Self {
-        let mut context = Context {
+    pub fn new(base_url: String, project_name: Option<&str>, config: Config<C, Self>, clock: Arc<Clock>) -> Self {
+        let services_url = {
+            let configuration = parse_json_slice::<BTreeMap<String, Json>>(&http_request(Method::Get, &format!("{base_url}/configuration"), &[], &[]).unwrap().body).unwrap();
+            let services_hosts = configuration["servicesHosts"].as_array().unwrap();
+            services_hosts[0].as_object().unwrap().get("url").unwrap().as_str().unwrap().to_owned()
+        };
+
+        let mut context = NetsBloxContext {
             base_url,
+            services_url,
             client_id: crate::meta::DEFAULT_CLIENT_ID.into(),
             project_name: project_name.unwrap_or("untitled").to_owned(),
 
@@ -131,15 +88,15 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         let message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>> = Arc::new(Mutex::new(Default::default()));
 
         let (message_sender, message_receiver) = { // scope these so we deallocate them and save precious memory
-            let (msg_in_sender, msg_in_receiver) = channel::<IncomingMessage<C, Self>>();
-            let (msg_out_sender, msg_out_receiver) = channel::<OutgoingMessage<C, Self>>();
+            let (msg_in_sender, msg_in_receiver) = channel::<IncomingMessage>();
+            let (msg_out_sender, msg_out_receiver) = channel::<OutgoingMessage>();
             let (ws_sender, ws_receiver) = channel::<String>();
 
             let ws_config = EspWebSocketClientConfig {
                 task_stack: 8000, // default caused stack overflow
                 ..Default::default()
             };
-            let ws_url = if let Some(x) = context.base_url.strip_prefix("http") { format!("ws{x}") } else { format!("wss://{}", context.base_url) };
+            let ws_url = format!("{}/network/{}/connect", if let Some(x) = context.base_url.strip_prefix("http") { format!("ws{x}") } else { format!("wss://{}", context.base_url) }, context.client_id);
             let ws_sender_clone = ws_sender.clone();
             let message_replies = message_replies.clone();
             let client_id = context.client_id.clone();
@@ -188,7 +145,8 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                                 }
                                 false => None,
                             };
-                            msg_in_sender.send(IncomingMessage { msg_type, values: values.into_iter().collect(), reply_key }).unwrap();
+                            let values = values.into_iter().filter_map(|(k, v)| SimpleValue::from_netsblox_json(v).ok().map(|v| (k, v))).collect();
+                            msg_in_sender.send(IncomingMessage { msg_type, values, reply_key }).unwrap();
                         }
                     }
                     _ => (),
@@ -204,20 +162,29 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
 
             let project_name = context.project_name.clone();
             let client_id = context.client_id.clone();
+            let src_id = format!("{project_name}@{client_id}#vm");
+            fn resolve_targets<'a>(targets: &'a mut [String], src_id: &String) -> &'a mut [String] {
+                for target in targets.iter_mut() {
+                    if target == "everyone in room" {
+                        target.clone_from(src_id);
+                    }
+                }
+                targets
+            }
             thread::spawn(move || {
                 while let Ok(request) = msg_out_receiver.recv() {
                     let msg = match request {
-                        OutgoingMessage::Normal { msg_type, values, targets } => json!({
+                        OutgoingMessage::Normal { msg_type, values, mut targets } => json!({
                             "type": "message",
-                            "dstId": targets,
-                            "srcId": format!("{}@{}", project_name, client_id),
+                            "dstId": resolve_targets(&mut targets, &src_id),
+                            "srcId": src_id,
                             "msgType": msg_type,
                             "content": values.into_iter().collect::<JsonMap<_,_>>(),
                         }),
-                        OutgoingMessage::Blocking { msg_type, values, targets, reply_key } => json!({
+                        OutgoingMessage::Blocking { msg_type, values, mut targets, reply_key } => json!({
                             "type": "message",
-                            "dstId": targets,
-                            "srcId": format!("{}@{}", project_name, client_id),
+                            "dstId": resolve_targets(&mut targets, &src_id),
+                            "srcId": src_id,
                             "msgType": msg_type,
                             "requestId": reply_key.request_id,
                             "content": values.into_iter().collect::<JsonMap<_,_>>(),
@@ -238,39 +205,45 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         };
 
         { // scope these so we deallocate them and save precious memory
-            let resp = http_request(Method::Post, &format!("{}/api/newProject", context.base_url),
+            let resp = http_request(Method::Post, &format!("{}/projects", context.base_url),
                 &[("Content-Type", "application/json")],
                 json!({
                     "clientId": context.client_id,
-                    "roleName": "monad",
-                }).to_string().as_bytes()
-            ).unwrap();
-            let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
-            context.project_id = meta["projectId"].as_str().unwrap().to_owned();
-            context.role_id = meta["roleId"].as_str().unwrap().to_owned();
-            context.role_name = meta["roleName"].as_str().unwrap().to_owned();
-        }
-
-        { // scope these so we deallocate them and save precious memory
-            let resp = http_request(Method::Post, &format!("{}/api/setProjectName", context.base_url),
-                &[("Content-Type", "application/json")],
-                json!({
-                    "projectId": context.project_id,
                     "name": context.project_name,
                 }).to_string().as_bytes()
             ).unwrap();
             let meta = parse_json_slice::<BTreeMap<String, Json>>(&resp.body).unwrap();
-            context.project_name = meta["name"].as_str().unwrap().to_owned();
+            context.project_id = meta["id"].as_str().unwrap().to_owned();
+
+            let roles = meta["roles"].as_object().unwrap();
+            let (first_role_id, first_role_meta) = roles.get_key_value(roles.keys().next().unwrap()).unwrap();
+            let first_role_meta = first_role_meta.as_object().unwrap();
+            context.role_id = first_role_id.to_owned();
+            context.role_name = first_role_meta.get("name").unwrap().as_str().unwrap().to_owned();
+        }
+
+        { // scope these so we deallocate them and save precious memory
+            http_request(Method::Post, &format!("{}/network/{}/state", context.base_url, context.client_id),
+                &[("Content-Type", "application/json")],
+                json!({
+                    "state": {
+                        "external": {
+                            "address": context.project_name,
+                            "appId": "vm",
+                        }
+                    },
+                }).to_string().as_bytes()
+            ).unwrap();
         }
 
         let context = Arc::new(context);
 
         let rpc_request_sender = {
-            let (rpc_request_sender, rpc_request_receiver) = channel::<RpcRequest<C>>();
+            let (rpc_request_sender, rpc_request_receiver) = channel::<RpcRequest<C, Self>>();
             let context = context.clone();
             thread::spawn(move || {
                 while let Ok(RpcRequest { service, rpc, args, key }) = rpc_request_receiver.recv() {
-                    key.complete(call_rpc::<C, Self>(&*context, &service, &rpc, &args));
+                    key.complete(call_rpc::<C, Self>(&*context, &service, &rpc, &args).map(Into::into));
                 }
             });
             rpc_request_sender
@@ -279,14 +252,21 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         let mut seed: <ChaChaRng as SeedableRng>::Seed = Default::default();
         getrandom::getrandom(&mut seed).expect("failed to generate random seed");
 
+        let context_clone = context.clone();
         let config = config.fallback(&Config {
-            request: Some(Rc::new(|system, _, key, request, _| match request {
-                Request::Rpc { service, rpc, args } => {
-                    match args.into_iter().map(|(k, v)| Ok((k, v.to_json()?))).collect::<Result<BTreeMap<_,_>,ToJsonError<_,_>>>() {
-                        Ok(args) => system.rpc_request_sender.send(RpcRequest { service, rpc, args, key }).unwrap(),
-                        Err(err) => key.complete(Err(format!("failed to convert RPC args to json: {err:?}"))),
+            request: Some(Rc::new(move |_, key, request, proc| match request {
+                Request::Rpc { service, rpc, args } => match (service.as_str(), rpc.as_str(), args.as_slice()) {
+                    ("PublicRoles", "getPublicRoleId", []) => {
+                        key.complete(Ok(SimpleValue::String(format!("{}@{}#vm", context_clone.project_name, context_clone.client_id)).into()));
+                        RequestStatus::Handled
                     }
-                    RequestStatus::Handled
+                    _ => {
+                        match args.into_iter().map(|(k, v)| Ok((k, v.to_simple()?.into_json()?))).collect::<Result<_,ErrorCause<_,_>>>() {
+                            Ok(args) => proc.global_context.borrow().system.rpc_request_sender.send(RpcRequest { service, rpc, args, key }).unwrap(),
+                            Err(err) => key.complete(Err(format!("failed to convert RPC args to json: {err:?}"))),
+                        }
+                        RequestStatus::Handled
+                    }
                 }
                 _ => RequestStatus::UseDefault { key, request },
             })),
@@ -294,98 +274,94 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
         });
 
         EspSystem {
-            config, context, message_replies, message_sender, message_receiver, rpc_request_sender,
+            config, context, message_replies, message_sender, message_receiver, rpc_request_sender, clock,
             rng: Mutex::new(ChaChaRng::from_seed(seed)),
         }
     }
 
     /// Gets the public id of the running system that can be used to send messages to this client.
     pub fn get_public_id(&self) -> String {
-        format!("{}@{}", self.context.project_name, self.context.client_id)
+        format!("{}@{}#vm", self.context.project_name, self.context.client_id)
     }
 }
-
 impl<C: CustomTypes<Self>> System<C> for EspSystem<C> {
-    type RequestKey = RequestKey<C>;
-    type CommandKey = CommandKey;
-
-    type ExternReplyKey = ExternReplyKey;
-    type InternReplyKey = InternReplyKey;
+    type RequestKey = AsyncKey<Result<C::Intermediate, String>>;
+    type CommandKey = AsyncKey<Result<(), String>>;
 
     fn rand<T, R>(&self, range: R) -> T where T: SampleUniform, R: SampleRange<T> {
         self.rng.lock().unwrap().gen_range(range)
     }
 
-    fn time(&self) -> SysTime {
-        let t = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-        SysTime::Real { local: OffsetDateTime::from_unix_timestamp_nanos(t as i128).unwrap() }
+    fn time(&self, precision: Precision) -> SysTime {
+        SysTime::Real { local: self.clock.read(precision) }
     }
 
-    fn perform_request<'gc>(&self, mc: &Mutation<'gc>, request: Request<'gc, C, Self>, entity: &mut Entity<'gc, C, Self>) -> Result<MaybeAsync<Result<Value<'gc, C, Self>, String>, Self::RequestKey>, ErrorCause<C, Self>> {
+    fn perform_request<'gc>(&self, mc: &Mutation<'gc>, request: Request<'gc, C, Self>, proc: &mut Process<'gc, C, Self>) -> Result<Self::RequestKey, ErrorCause<C, Self>> {
         Ok(match self.config.request.as_ref() {
             Some(handler) => {
-                let key = RequestKey(Arc::new(Mutex::new(AsyncResult::new())));
-                match handler(self, mc, RequestKey(key.0.clone()), request, entity) {
-                    RequestStatus::Handled => MaybeAsync::Async(key),
+                let key = AsyncKey::new();
+                match handler(mc, key.clone(), request, proc) {
+                    RequestStatus::Handled => key,
                     RequestStatus::UseDefault { key: _, request } => return Err(ErrorCause::NotSupported { feature: request.feature() }),
                 }
             }
             None => return Err(ErrorCause::NotSupported { feature: request.feature() }),
         })
     }
-    fn poll_request<'gc>(&self, mc: &Mutation<'gc>, key: &Self::RequestKey, _entity: &mut Entity<'gc, C, Self>) -> Result<AsyncResult<Result<Value<'gc, C, Self>, String>>, ErrorCause<C, Self>> {
+    fn poll_request<'gc>(&self, mc: &Mutation<'gc>, key: &Self::RequestKey, _proc: &mut Process<'gc, C, Self>) -> Result<AsyncResult<Result<Value<'gc, C, Self>, String>>, ErrorCause<C, Self>> {
         Ok(match key.poll() {
-            AsyncResult::Completed(Ok(x)) => AsyncResult::Completed(Ok(C::from_intermediate(mc, x)?)),
+            AsyncResult::Completed(Ok(x)) => AsyncResult::Completed(Ok(C::from_intermediate(mc, x))),
             AsyncResult::Completed(Err(x)) => AsyncResult::Completed(Err(x)),
             AsyncResult::Pending => AsyncResult::Pending,
             AsyncResult::Consumed => AsyncResult::Consumed,
         })
     }
 
-    fn perform_command<'gc>(&self, mc: &Mutation<'gc>, command: Command<'gc, '_, C, Self>, entity: &mut Entity<'gc, C, Self>) -> Result<MaybeAsync<Result<(), String>, Self::CommandKey>, ErrorCause<C, Self>> {
+    fn perform_command<'gc>(&self, mc: &Mutation<'gc>, command: Command<'gc, '_, C, Self>, proc: &mut Process<'gc, C, Self>) -> Result<Self::CommandKey, ErrorCause<C, Self>> {
         Ok(match self.config.command.as_ref() {
             Some(handler) => {
-                let key = CommandKey(Arc::new(Mutex::new(AsyncResult::new())));
-                match handler(self, mc, CommandKey(key.0.clone()), command, entity) {
-                    CommandStatus::Handled => MaybeAsync::Async(key),
+                let key = AsyncKey::new();
+                match handler(mc, key.clone(), command, proc) {
+                    CommandStatus::Handled => key,
                     CommandStatus::UseDefault { key: _, command } => return Err(ErrorCause::NotSupported { feature: command.feature() }),
                 }
             }
             None => return Err(ErrorCause::NotSupported { feature: command.feature() }),
         })
     }
-    fn poll_command<'gc>(&self, _mc: &Mutation<'gc>, key: &Self::CommandKey, _entity: &mut Entity<'gc, C, Self>) -> Result<AsyncResult<Result<(), String>>, ErrorCause<C, Self>> {
+    fn poll_command<'gc>(&self, _mc: &Mutation<'gc>, key: &Self::CommandKey, _proc: &mut Process<'gc, C, Self>) -> Result<AsyncResult<Result<(), String>>, ErrorCause<C, Self>> {
         Ok(key.poll())
     }
 
-    fn send_message(&self, msg_type: String, values: Vec<(String, Json)>, targets: Vec<String>, expect_reply: bool) -> Result<Option<Self::ExternReplyKey>, ErrorCause<C, Self>> {
+    fn send_message(&self, msg_type: String, values: Vec<(String, Json)>, targets: Vec<String>, expect_reply: bool) -> Result<Option<ExternReplyKey>, ErrorCause<C, Self>> {
         let (msg, reply_key) = match expect_reply {
             false => (OutgoingMessage::Normal { msg_type, values, targets }, None),
             true => {
                 let reply_key = ExternReplyKey { request_id: Uuid::new_v4().to_string() };
-                self.message_replies.lock().unwrap().insert(reply_key.clone(), ReplyEntry { timestamp: Instant::now(), value: None });
+                let expiry = self.clock.read(Precision::Medium) + MESSAGE_REPLY_TIMEOUT;
+                self.message_replies.lock().unwrap().insert(reply_key.clone(), ReplyEntry { expiry, value: None });
                 (OutgoingMessage::Blocking { msg_type, values, targets, reply_key: reply_key.clone() }, Some(reply_key))
             }
         };
         self.message_sender.send(msg).unwrap();
         Ok(reply_key)
     }
-    fn poll_reply(&self, key: &Self::ExternReplyKey) -> AsyncResult<Option<Json>> {
+    fn poll_reply(&self, key: &ExternReplyKey) -> AsyncResult<Option<Json>> {
         let mut message_replies = self.message_replies.lock().unwrap();
         let entry = message_replies.get(key).unwrap();
         if entry.value.is_some() {
             return AsyncResult::Completed(message_replies.remove(key).unwrap().value);
         }
-        if entry.timestamp.elapsed().as_millis() as u32 >= MESSAGE_REPLY_TIMEOUT_MS {
+        if self.clock.read(Precision::Low) > entry.expiry {
             message_replies.remove(key).unwrap();
             return AsyncResult::Completed(None);
         }
         AsyncResult::Pending
     }
-    fn send_reply(&self, key: Self::InternReplyKey, value: Json) -> Result<(), ErrorCause<C, Self>> {
+    fn send_reply(&self, key: InternReplyKey, value: Json) -> Result<(), ErrorCause<C, Self>> {
         Ok(self.message_sender.send(OutgoingMessage::Reply { value, reply_key: key }).unwrap())
     }
-    fn receive_message(&self) -> Option<IncomingMessage<C, Self>> {
+    fn receive_message(&self) -> Option<IncomingMessage> {
         self.message_receiver.try_recv().ok()
     }
 }

@@ -32,6 +32,8 @@ use netsblox_vm::gc::{Collect, Gc, RefLock, Rootable, Arena};
 use netsblox_vm::json::serde_json;
 use netsblox_vm::runtime::{System, Config, Command, CommandStatus, CustomTypes, Key};
 use netsblox_vm::ast;
+use netsblox_vm::std_util::Clock;
+use netsblox_vm::real_time::UtcOffset;
 
 pub use netsblox_vm;
 
@@ -65,7 +67,7 @@ type EnvArena<C, S> = Arena<Rootable![Env<'_, C, S>]>;
 
 fn get_env<C: CustomTypes<S>, S: System<C>>(role: &ast::Role, system: Rc<S>) -> Result<EnvArena<C, S>, CompileError> {
     let (bytecode, init_info, locs, _) = ByteCode::compile(role).unwrap();
-    Ok(EnvArena::new(Default::default(), |mc| {
+    Ok(EnvArena::new(|mc| {
         let proj = Project::from_init(mc, &init_info, Rc::new(bytecode), Default::default(), system);
         Env { proj: Gc::new(mc, RefLock::new(proj)), locs }
     }))
@@ -584,9 +586,10 @@ impl Executor {
 
         let runtime = self.runtime.clone();
         let config = config.fallback(&Config {
-            command: Some(Rc::new(move |_, _, key, command, entity| match command {
+            command: Some(Rc::new(move |_, key, command, proc| match command {
                 Command::Print { style: _, value } => {
                     if let Some(value) = value {
+                        let entity = &*proc.get_call_stack().last().unwrap().entity.borrow();
                         tee_println!(&mut *runtime.lock().unwrap() => "{entity:?} > {value:?}");
                     }
                     key.complete(Ok(()));
@@ -597,7 +600,9 @@ impl Executor {
             request: None,
         });
 
-        let system = Rc::new(EspSystem::<platform::C>::new(server_addr, Some("project"), config));
+        let clock = Arc::new(Clock::new(UtcOffset::UTC, None));
+
+        let system = Rc::new(EspSystem::<platform::C>::new(server_addr, Some("project"), config, clock));
 
         let mut running_env = {
             let role = {
