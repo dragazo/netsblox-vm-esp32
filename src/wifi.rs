@@ -1,30 +1,26 @@
-use std::time::Duration;
 use std::net::Ipv4Addr;
 use std::sync::{Arc, Mutex};
 
 use esp_idf_svc::eventloop::EspSystemEventLoop;
-use esp_idf_svc::wifi::EspWifi;
+use esp_idf_svc::wifi::{EspWifi, BlockingWifi};
 use esp_idf_svc::nvs::EspDefaultNvsPartition;
-use esp_idf_svc::netif::{EspNetif, EspNetifWait};
 
 use esp_idf_hal::modem::WifiModem;
 
 use esp_idf_sys::EspError;
 
-use embedded_svc::wifi::{AuthMethod, Configuration, ClientConfiguration, AccessPointConfiguration, Wifi as _};
+use embedded_svc::wifi::{AuthMethod, Configuration, ClientConfiguration, AccessPointConfiguration};
 
 use crate::storage::StorageController;
 
 pub struct Wifi {
-    wifi: EspWifi<'static>,
-    event_loop: EspSystemEventLoop,
+    wifi: BlockingWifi<EspWifi<'static>>,
     storage: Arc<Mutex<StorageController>>,
 }
 impl Wifi {
     pub fn new(modem: WifiModem, event_loop: EspSystemEventLoop, nvs_partition: EspDefaultNvsPartition, storage: Arc<Mutex<StorageController>>) -> Result<Self, EspError> {
         Ok(Wifi {
-            wifi: EspWifi::new(modem, event_loop.clone(), Some(nvs_partition))?,
-            event_loop: event_loop,
+            wifi: BlockingWifi::wrap(EspWifi::new(modem, event_loop.clone(), Some(nvs_partition))?, event_loop)?,
             storage,
         })
     }
@@ -55,7 +51,7 @@ impl Wifi {
 
         let client_config = match (client_ssid.as_deref(), client_pass.as_deref()) {
             (Some(ssid), Some(pass)) => {
-                let aps = self.wifi.driver_mut().scan()?;
+                let aps = self.wifi.scan()?;
                 let ap = aps.iter().find(|ap| ap.ssid.as_str() == ssid);
                 println!("access point: {ap:?}");
 
@@ -81,8 +77,8 @@ impl Wifi {
 
         if is_client {
             self.wifi.connect()?;
-            let wait_for = || self.wifi.is_connected().unwrap() && self.wifi.sta_netif().get_ip_info().unwrap().ip != Ipv4Addr::new(0, 0, 0, 0);
-            if !EspNetifWait::new::<EspNetif>(self.wifi.sta_netif(), &self.event_loop)?.wait_with_timeout(Duration::from_secs(20), wait_for) {
+            self.wifi.wait_netif_up()?;
+            if !self.wifi.is_connected().unwrap() || self.wifi.wifi().sta_netif().get_ip_info().unwrap().ip == Ipv4Addr::new(0, 0, 0, 0) {
                 println!("wifi client couldn't connect... {:?}", (client_ssid, client_pass));
             }
         }
@@ -90,10 +86,10 @@ impl Wifi {
         Ok(())
     }
     pub fn client_ip(&self) -> Option<Ipv4Addr> {
-        let ip = self.wifi.sta_netif().get_ip_info().unwrap().ip;
+        let ip = self.wifi.wifi().sta_netif().get_ip_info().unwrap().ip;
         if ip != Ipv4Addr::new(0, 0, 0, 0) { Some(ip) } else { None }
     }
     pub fn server_ip(&self) -> Ipv4Addr {
-        self.wifi.ap_netif().get_ip_info().unwrap().ip
+        self.wifi.wifi().ap_netif().get_ip_info().unwrap().ip
     }
 }

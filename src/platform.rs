@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::BTreeMap;
 use std::time::{Instant, Duration};
 use std::cell::RefCell;
 use std::sync::Arc;
@@ -13,8 +13,8 @@ use netsblox_vm::template::SyscallMenu;
 use esp_idf_sys::EspError;
 
 use esp_idf_hal::units::FromValueType;
-use esp_idf_hal::ledc::{config::TimerConfig, LEDC, AnyLedcChannel, Resolution, SpeedMode, LedcTimerDriver, LedcDriver};
-use esp_idf_hal::gpio::{Pins, PinDriver, AnyPin, AnyInputPin, AnyOutputPin, Input, Output, Level};
+use esp_idf_hal::ledc::{config::TimerConfig, LEDC, Resolution, SpeedMode, LedcTimerDriver, LedcDriver};
+use esp_idf_hal::gpio::{Pins, PinDriver, AnyInputPin, AnyOutputPin, AnyIOPin, Input, Output, Level};
 use esp_idf_hal::delay::Ets;
 use esp_idf_hal::i2c::{I2cDriver, I2cError, I2C0};
 
@@ -25,6 +25,8 @@ use serde::Deserialize;
 use crate::system::EspSystem;
 
 // -----------------------------------------------------------------
+
+type PinNumber = u8;
 
 struct PeripheralHandles {
     digital_ins: BTreeMap<String, DigitalInController>,
@@ -64,16 +66,16 @@ pub struct PeripheralsConfig {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct I2c {
-    gpio_sda: usize,
-    gpio_scl: usize,
+    gpio_sda: PinNumber,
+    gpio_scl: PinNumber,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Motor {
     name: String,
-    gpio_pos: usize,
-    gpio_neg: usize,
+    gpio_pos: PinNumber,
+    gpio_neg: PinNumber,
 }
 
 #[derive(Debug, Deserialize)]
@@ -87,15 +89,15 @@ struct MotorGroup {
 #[serde(deny_unknown_fields)]
 struct HCSR04 {
     name: String,
-    gpio_trigger: usize,
-    gpio_echo: usize,
+    gpio_trigger: PinNumber,
+    gpio_echo: PinNumber,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct DigitalIO {
     name: String,
-    gpio: usize,
+    gpio: PinNumber,
     negated: bool,
 }
 
@@ -108,11 +110,33 @@ struct BasicI2c {
 
 // -----------------------------------------------------------------
 
+#[derive(PartialOrd, Ord, PartialEq, Eq)]
+struct AnyPin(PinNumber);
+impl AnyPin {
+    fn try_into_input_output(self) -> Option<AnyIOPin> {
+        let mut pin = unsafe { AnyIOPin::new(self.0 as i32) };
+        PinDriver::input_output(&mut pin).ok()?;
+        Some(pin)
+    }
+    fn try_into_input(self) -> Option<AnyInputPin> {
+        let mut pin = unsafe { AnyInputPin::new(self.0 as i32) };
+        PinDriver::input(&mut pin).ok()?;
+        Some(pin)
+    }
+    fn try_into_output(self) -> Option<AnyOutputPin> {
+        let mut pin = unsafe { AnyOutputPin::new(self.0 as i32) };
+        PinDriver::output(&mut pin).ok()?;
+        Some(pin)
+    }
+}
+
+// -----------------------------------------------------------------
+
 #[derive(Debug)]
 pub enum PeripheralError {
-    PinUnknown { pin: usize },
-    PinAlreadyTaken { pin: usize },
-    PinInsufficientCapability { pin: usize },
+    PinUnknown { pin: PinNumber },
+    PinAlreadyTaken { pin: PinNumber },
+    PinInsufficientCapability { pin: PinNumber },
     NameUnknown { name: String },
     NameAlreadyTaken { name: String },
     PwmOutOfChannels,
@@ -125,62 +149,16 @@ impl From<EspError> for PeripheralError { fn from(value: EspError) -> Self { Sel
 impl From<I2cError> for PeripheralError { fn from(value: I2cError) -> Self { Self::I2cError(value) } }
 
 struct GpioManager {
-    pins: BTreeMap<usize, Option<AnyPin>>,
+    pins: BTreeMap<PinNumber, Option<()>>,
 }
 impl GpioManager {
-    fn new(raw_pins: Pins) -> Self {
-        let mut pins = BTreeMap::new();
-        pins.insert(0, Some(raw_pins.gpio0.into()));
-        pins.insert(1, Some(raw_pins.gpio1.into()));
-        pins.insert(2, Some(raw_pins.gpio2.into()));
-        pins.insert(3, Some(raw_pins.gpio3.into()));
-        pins.insert(4, Some(raw_pins.gpio4.into()));
-        pins.insert(5, Some(raw_pins.gpio5.into()));
-        pins.insert(6, Some(raw_pins.gpio6.into()));
-        pins.insert(7, Some(raw_pins.gpio7.into()));
-        pins.insert(8, Some(raw_pins.gpio8.into()));
-        pins.insert(9, Some(raw_pins.gpio9.into()));
-        pins.insert(10, Some(raw_pins.gpio10.into()));
-        pins.insert(11, Some(raw_pins.gpio11.into()));
-        pins.insert(12, Some(raw_pins.gpio12.into()));
-        pins.insert(13, Some(raw_pins.gpio13.into()));
-        pins.insert(14, Some(raw_pins.gpio14.into()));
-        pins.insert(15, Some(raw_pins.gpio15.into()));
-        pins.insert(16, Some(raw_pins.gpio16.into()));
-        pins.insert(17, Some(raw_pins.gpio17.into()));
-        pins.insert(18, Some(raw_pins.gpio18.into()));
-        pins.insert(19, Some(raw_pins.gpio19.into()));
-        pins.insert(20, Some(raw_pins.gpio20.into()));
-        pins.insert(21, Some(raw_pins.gpio21.into()));
-        pins.insert(26, Some(raw_pins.gpio26.into()));
-        pins.insert(27, Some(raw_pins.gpio27.into()));
-        pins.insert(28, Some(raw_pins.gpio28.into()));
-        pins.insert(29, Some(raw_pins.gpio29.into()));
-        pins.insert(30, Some(raw_pins.gpio30.into()));
-        pins.insert(31, Some(raw_pins.gpio31.into()));
-        pins.insert(32, Some(raw_pins.gpio32.into()));
-        pins.insert(33, Some(raw_pins.gpio33.into()));
-        pins.insert(34, Some(raw_pins.gpio34.into()));
-        pins.insert(35, Some(raw_pins.gpio35.into()));
-        pins.insert(36, Some(raw_pins.gpio36.into()));
-        pins.insert(37, Some(raw_pins.gpio37.into()));
-        pins.insert(38, Some(raw_pins.gpio38.into()));
-        pins.insert(39, Some(raw_pins.gpio39.into()));
-        pins.insert(40, Some(raw_pins.gpio40.into()));
-        pins.insert(41, Some(raw_pins.gpio41.into()));
-        pins.insert(42, Some(raw_pins.gpio42.into()));
-        pins.insert(43, Some(raw_pins.gpio43.into()));
-        pins.insert(44, Some(raw_pins.gpio44.into()));
-        pins.insert(45, Some(raw_pins.gpio45.into()));
-        pins.insert(46, Some(raw_pins.gpio46.into()));
-        pins.insert(47, Some(raw_pins.gpio47.into()));
-        pins.insert(48, Some(raw_pins.gpio48.into()));
-        Self { pins }
+    fn new(_: Pins) -> Self { // take ownership of all pins for safety reasons
+        Self { pins: (0..=48).map(|x| (x, Some(()))).collect() }
     }
-    fn take_convert<T>(&mut self, id: usize, f: fn(AnyPin) -> Option<T>) -> Result<T, PeripheralError> {
+    fn take_convert<T>(&mut self, id: PinNumber, f: fn(AnyPin) -> Option<T>) -> Result<T, PeripheralError> {
         match self.pins.get_mut(&id) {
             Some(x) => match x.take() {
-                Some(x) => match f(x) {
+                Some(()) => match f(AnyPin(id)) {
                     Some(x) => Ok(x),
                     None => Err(PeripheralError::PinInsufficientCapability { pin: id }),
                 }
@@ -192,7 +170,14 @@ impl GpioManager {
 }
 
 struct PwmManager {
-    channels: VecDeque<AnyLedcChannel>,
+    channel0: Option<esp_idf_hal::ledc::CHANNEL0>,
+    channel1: Option<esp_idf_hal::ledc::CHANNEL1>,
+    channel2: Option<esp_idf_hal::ledc::CHANNEL2>,
+    channel3: Option<esp_idf_hal::ledc::CHANNEL3>,
+    channel4: Option<esp_idf_hal::ledc::CHANNEL4>,
+    channel5: Option<esp_idf_hal::ledc::CHANNEL5>,
+    channel6: Option<esp_idf_hal::ledc::CHANNEL6>,
+    channel7: Option<esp_idf_hal::ledc::CHANNEL7>,
     timer: Arc<LedcTimerDriver<'static>>,
 }
 impl PwmManager {
@@ -204,22 +189,28 @@ impl PwmManager {
         };
         let timer = Arc::new(LedcTimerDriver::new(ledc.timer0, &timer_config)?);
 
-        let mut channels = VecDeque::new();
-        channels.push_back(ledc.channel0.into());
-        channels.push_back(ledc.channel1.into());
-        channels.push_back(ledc.channel2.into());
-        channels.push_back(ledc.channel3.into());
-        channels.push_back(ledc.channel4.into());
-        channels.push_back(ledc.channel5.into());
-        channels.push_back(ledc.channel6.into());
-        channels.push_back(ledc.channel7.into());
-        Ok(Self { channels, timer })
+        Ok(Self {
+            timer,
+            channel0: Some(ledc.channel0),
+            channel1: Some(ledc.channel1),
+            channel2: Some(ledc.channel2),
+            channel3: Some(ledc.channel3),
+            channel4: Some(ledc.channel4),
+            channel5: Some(ledc.channel5),
+            channel6: Some(ledc.channel6),
+            channel7: Some(ledc.channel7),
+        })
     }
     fn take(&mut self, pin: AnyOutputPin) -> Result<LedcDriver<'static>, PeripheralError> {
-        match self.channels.pop_front() {
-            Some(channel) => Ok(LedcDriver::new(channel, self.timer.clone(), pin)?),
-            None => Err(PeripheralError::PwmOutOfChannels),
+        macro_rules! try_in_order {
+            ($($name:ident),+) => {$(
+                if let Some(channel) = self.$name.take() {
+                    return Ok(LedcDriver::new(channel, self.timer.clone(), pin)?);
+                }
+            )+}
         }
+        try_in_order! { channel0, channel1, channel2, channel3, channel4, channel5, channel6, channel7 }
+        Err(PeripheralError::PwmOutOfChannels)
     }
 }
 

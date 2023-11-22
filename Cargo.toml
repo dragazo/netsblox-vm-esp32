@@ -31,12 +31,10 @@ pio = ["esp-idf-sys/pio"]
 # core deps
 netsblox-vm = { version = "=0.3.1", default-features = false, features = ["serde", "std"] }
 gc-arena = { version = "=0.4.0", default-features = false }
-esp-idf-sys = { version = "0.32.1", features = ["binstart"] }
-# esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc", features = ["experimental"] }
-esp-idf-svc = { git = "https://github.com/dragazo/esp-idf-svc", features = ["experimental"] }
-embedded-svc = { version = "0.24.0", feature = ["experimental"] }
-esp-idf-hal = { git = "https://github.com/dragazo/esp-idf-hal" }
-# esp-idf-hal = "0.40.1"
+esp-idf-sys = { version = "0.33.7", features = ["binstart"] }
+esp-idf-svc = { version = "0.47.3", features = ["experimental"] }
+embedded-svc = { version = "0.26.4", feature = ["experimental"] }
+esp-idf-hal = { version = "0.42.5" }
 serde = { version = "1.0", features = ["derive"], default-features = false }
 rand = { version = "0.8.5", default-features = false }
 rand_chacha = { version = "0.3.1" }

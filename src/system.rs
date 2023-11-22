@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::thread;
 
 use esp_idf_svc::ws::client::{EspWebSocketClient, EspWebSocketClientConfig, WebSocketEvent, WebSocketEventType};
-use esp_idf_svc::errors::EspIOError;
+use esp_idf_hal::io::EspIOError;
 use embedded_svc::ws::FrameType;
 use embedded_svc::http::Method;
 
@@ -152,7 +152,7 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                     _ => (),
                 }
             };
-            let mut ws_client = EspWebSocketClient::new(ws_url, &ws_config, Duration::from_secs(10), ws_on_msg).unwrap();
+            let mut ws_client = EspWebSocketClient::new(&ws_url, &ws_config, Duration::from_secs(10), ws_on_msg).unwrap();
 
             thread::spawn(move || {
                 while let Ok(packet) = ws_receiver.recv() {
