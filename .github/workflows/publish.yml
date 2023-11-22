@@ -12,13 +12,15 @@ jobs:
     steps:
       - uses: actions/checkout@v3
       - uses: esp-rs/xtensa-toolchain@v1.5
+      - uses: actions/setup-python@v4
       - run: sudo apt install -y libudev-dev
       - run: cargo install espflash@2.0.0-rc.3
       - run: openssl req -newkey rsa:2048 -nodes -keyout privkey.pem -x509 -days 3650 -out cacert.pem -subj "/CN=NetsBlox VM ESP32"
       - run: mkdir pubs
 
       - run: cargo +esp build --release --target xtensa-esp32s3-espidf
-      - run: espflash save-image --chip esp32s3 --flash-size 8mb --partition-table partitions.csv whole --merge target/xtensa-esp32s3-espidf/release/netsblox-vm-esp32
+      - run: espflash save-image --chip esp32s3 --flash-size 8mb --partition-table partitions.csv --merge target/xtensa-esp32s3-espidf/release/netsblox-vm-esp32 whole
+      - run: python extract-ota.py whole partitions.csv whole
       - run: split -b 256k -da 4 whole part-
       - run: ls part-* | wc -l >parts
       - run: mkdir pubs/esp32s3 && mv whole pubs/esp32s3/. && mv parts pubs/esp32s3/. && mv part-* pubs/esp32s3/.
