@@ -14,7 +14,7 @@ jobs:
       - uses: esp-rs/xtensa-toolchain@v1.5
       - uses: actions/setup-python@v4
       - run: sudo apt install -y libudev-dev
-      - run: cargo install espflash@2.0.0-rc.3
+      - run: cargo install espflash
       - run: openssl req -newkey rsa:2048 -nodes -keyout privkey.pem -x509 -days 3650 -out cacert.pem -subj "/CN=NetsBlox VM ESP32"
       - run: mkdir pubs
 
