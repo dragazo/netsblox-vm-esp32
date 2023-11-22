@@ -48,6 +48,9 @@ use crate::storage::*;
 use crate::system::*;
 use crate::wifi::*;
 
+const CLOUD_URL: &'static str = "https://cloud.netsblox.org";
+const EDITOR_URL: &'static str = "https://editor.netsblox.org";
+
 const YIELDS_BEFORE_IDLE_SLEEP: usize = 256;
 const IDLE_SLEEP_TIME: Duration = Duration::from_millis(1); // sleep clock has 1ms precision (minimum value before no-op)
 const STEP_BATCH_SIZE: usize = 128;
@@ -402,34 +405,6 @@ impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
     }
 }
 
-struct ServerHandler {
-    storage: Arc<Mutex<StorageController>>,
-}
-impl Handler<EspHttpConnection<'_>> for ServerHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
-        let server = match String::from_utf8(read_all(connection)?) {
-            Ok(x) => x,
-            Err(_) => {
-                connection.initiate_response(400, None, &[
-                    ("Access-Control-Allow-Origin", "*"),
-                    ("Content-Type", "text/plain"),
-                ])?;
-                connection.write(b"ERROR: failed to parse request body")?;
-                return Ok(());
-            }
-        };
-
-        self.storage.lock().unwrap().netsblox_server().set(&server)?;
-
-        connection.initiate_response(200, None, &[
-            ("Access-Control-Allow-Origin", "*"),
-            ("Content-Type", "text/plain"),
-        ])?;
-        connection.write(b"successfully updated netsblox server... restart the board to apply changes...")?;
-        Ok(())
-    }
-}
-
 enum ServerCommand {
     SetProject(String),
     Input(Input),
@@ -530,12 +505,10 @@ impl Executor {
             }}
         }
 
-        let server_addr = self.storage.lock().unwrap().netsblox_server().get().unwrap().unwrap_or_else(|| "https://editor.netsblox.org".into());
-
         let root_content = include_str!("www/index.html")
             .replace("%%%AP_INFO%%%", &format!("<p>IP: {ap_ip}</p>"))
             .replace("%%%CLIENT_INFO%%%", &match client_ip {
-                Some(client_ip) => format!("<p>IP: {client_ip}</p><p><a target='_blank' href='{server_addr}?extensions=[\"https://{client_ip}/extension.js\"]'>Open Editor</a></p>"),
+                Some(client_ip) => format!("<p>IP: {client_ip}</p><p><a target='_blank' href='{EDITOR_URL}?extensions=[\"https://{client_ip}/extension.js\"]'>Open Editor</a></p>"),
                 None => "<p>Not Connected</p>".into(),
             })
             .replace("%%%PERIPH_INFO%%%", &peripherals_status_html);
@@ -544,7 +517,6 @@ impl Executor {
         server_handler!("/": Method::Get => RootHandler { content: root_content });
         server_handler!("/wipe": Method::Post => WipeHandler { storage: self.storage.clone() });
         server_handler!("/wifi": Method::Post => WifiConfigHandler { storage: self.storage.clone() });
-        server_handler!("/server": Method::Post => ServerHandler { storage: self.storage.clone() });
 
         // if we're not connected to the internet, just host the board config server and do nothing else
         let client_ip = client_ip.unwrap_or_else(|| loop {
@@ -572,7 +544,7 @@ impl Executor {
             Method::Post => SetPeripheralsHandler { storage: self.storage.clone() },
         );
 
-        println!("running: {server_addr}?extensions=[\"https://{client_ip}/extension.js\"]");
+        println!("running: {EDITOR_URL}?extensions=[\"https://{client_ip}/extension.js\"]");
 
         macro_rules! tee_println {
             ($runtime:expr => $($t:tt)*) => {{
@@ -602,7 +574,7 @@ impl Executor {
 
         let clock = Arc::new(Clock::new(UtcOffset::UTC, None));
 
-        let system = Rc::new(EspSystem::<platform::C>::new(server_addr, Some("project"), config, clock));
+        let system = Rc::new(EspSystem::<platform::C>::new(CLOUD_URL.into(), Some("project"), config, clock));
 
         let mut running_env = {
             let role = {

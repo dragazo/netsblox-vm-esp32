@@ -92,8 +92,6 @@ impl StorageController {
         wifi_client_ssid (wclssid): String,
         wifi_client_pass (wclpass): String,
 
-        netsblox_server (nbserver): String,
-
         peripherals (periph): String,
 
         project (proj): String,

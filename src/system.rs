@@ -87,10 +87,11 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
 
         let message_replies: Arc<Mutex<BTreeMap<ExternReplyKey, ReplyEntry>>> = Arc::new(Mutex::new(Default::default()));
 
-        let (message_sender, message_receiver) = { // scope these so we deallocate them and save precious memory
+        let (message_sender, message_receiver, ws_finish_flag) = { // scope these so we deallocate them and save precious memory
             let (msg_in_sender, msg_in_receiver) = channel::<IncomingMessage>();
             let (msg_out_sender, msg_out_receiver) = channel::<OutgoingMessage>();
             let (ws_sender, ws_receiver) = channel::<String>();
+            let finish_flag = Arc::new(());
 
             let ws_config = EspWebSocketClientConfig {
                 task_stack: 8000, // default caused stack overflow
@@ -100,12 +101,14 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
             let ws_sender_clone = ws_sender.clone();
             let message_replies = message_replies.clone();
             let client_id = context.client_id.clone();
+            let mut finish_flag_clone = Some(finish_flag.clone());
             let ws_on_msg = move |x: &Result<WebSocketEvent, EspIOError>| {
                 let mut msg = match x {
                     Ok(x) => {
                         match x.event_type {
                             WebSocketEventType::Connected => {
                                 ws_sender_clone.send(json!({ "type": "set-uuid", "clientId": client_id }).to_string()).unwrap();
+                                finish_flag_clone.take();
                                 return;
                             }
                             WebSocketEventType::Text(raw) => {
@@ -201,11 +204,15 @@ impl<C: CustomTypes<Self>> EspSystem<C> {
                 }
             });
 
-            (msg_out_sender, msg_in_receiver)
+            (msg_out_sender, msg_in_receiver, Arc::downgrade(&finish_flag))
         };
 
+        while ws_finish_flag.upgrade().is_some() {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+
         { // scope these so we deallocate them and save precious memory
-            let resp = http_request(Method::Post, &format!("{}/projects", context.base_url),
+            let resp = http_request(Method::Post, &format!("{}/projects/", context.base_url),
                 &[("Content-Type", "application/json")],
                 json!({
                     "clientId": context.client_id,
