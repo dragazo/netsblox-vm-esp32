@@ -17,7 +17,7 @@ use esp_idf_hal::modem::WifiModem;
 
 use esp_idf_sys::EspError;
 
-use embedded_svc::http::server::{Handler, HandlerResult};
+use embedded_svc::http::server::Handler;
 use embedded_svc::http::Method;
 
 use serde::Deserialize;
@@ -105,7 +105,8 @@ fn read_all(connection: &mut EspHttpConnection<'_>) -> Result<Vec<u8>, EspError>
 
 struct CorsOptionsHandler;
 impl Handler<EspHttpConnection<'_>> for CorsOptionsHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "text/plain"),
@@ -119,7 +120,8 @@ struct RootHandler {
     content: String,
 }
 impl Handler<EspHttpConnection<'_>> for RootHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "text/html"),
@@ -133,7 +135,8 @@ struct ExtensionHandler {
     extension: String,
 }
 impl Handler<EspHttpConnection<'_>> for ExtensionHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         connection.initiate_response(200, None, &[
             ("Access-Control-Allow-Origin", "*"),
             ("Content-Type", "application/javascript"),
@@ -147,7 +150,8 @@ struct PullStatusHandler {
     runtime: Arc<Mutex<RuntimeContext>>,
 }
 impl Handler<EspHttpConnection<'_>> for PullStatusHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         println!("free memory: {:?}", unsafe { (esp_idf_sys::esp_get_free_heap_size(), esp_idf_sys::esp_get_free_internal_heap_size()) });
 
         let res = {
@@ -185,7 +189,8 @@ struct GetProjectHandler {
     storage: Arc<Mutex<StorageController>>,
 }
 impl Handler<EspHttpConnection<'_>> for GetProjectHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         let project = self.storage.lock().unwrap().project().get()?;
         let project = project.as_deref().unwrap_or(EMPTY_PROJECT);
 
@@ -203,7 +208,8 @@ struct SetProjectHandler {
     runtime: Arc<Mutex<RuntimeContext>>,
 }
 impl Handler<EspHttpConnection<'_>> for SetProjectHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         let xml = match String::from_utf8(read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
@@ -231,7 +237,8 @@ struct GetPeripheralsHandler {
     storage: Arc<Mutex<StorageController>>,
 }
 impl Handler<EspHttpConnection<'_>> for GetPeripheralsHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         let peripherals = self.storage.lock().unwrap().peripherals().get()?;
         let peripherals = peripherals.as_deref().unwrap_or("{}");
 
@@ -248,7 +255,8 @@ struct SetPeripheralsHandler {
     storage: Arc<Mutex<StorageController>>,
 }
 impl Handler<EspHttpConnection<'_>> for SetPeripheralsHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         let content = match String::from_utf8(read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
@@ -276,7 +284,8 @@ struct InputHandler {
     runtime: Arc<Mutex<RuntimeContext>>,
 }
 impl Handler<EspHttpConnection<'_>> for InputHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         let input = match String::from_utf8(read_all(connection)?) {
             Ok(x) => match x.as_str() {
                 "start" => Input::Start,
@@ -315,7 +324,8 @@ struct TogglePausedHandler {
     runtime: Arc<Mutex<RuntimeContext>>,
 }
 impl Handler<EspHttpConnection<'_>> for TogglePausedHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         self.runtime.lock().unwrap().running ^= true;
 
         connection.initiate_response(200, None, &[
@@ -331,7 +341,8 @@ struct WipeHandler {
     storage: Arc<Mutex<StorageController>>,
 }
 impl Handler<EspHttpConnection<'_>> for WipeHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         {
             let mut storage = self.storage.lock().unwrap();
             storage.clear_all()?;
@@ -360,7 +371,8 @@ struct WifiConfigHandler {
     storage: Arc<Mutex<StorageController>>,
 }
 impl Handler<EspHttpConnection<'_>> for WifiConfigHandler {
-    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> HandlerResult {
+    type Error = EspError;
+    fn handle(&self, connection: &mut EspHttpConnection<'_>) -> Result<(), Self::Error> {
         let WifiConfig { kind, ssid, pass } = match serde_json::from_slice::<WifiConfig>(&read_all(connection)?) {
             Ok(x) => x,
             Err(_) => {
@@ -574,13 +586,12 @@ impl Executor {
 
         let clock = Arc::new(Clock::new(UtcOffset::UTC, None));
 
-        let system = Rc::new(EspSystem::<platform::C>::new(CLOUD_URL.into(), Some("project"), config, clock));
+        let system = Rc::new(EspSystem::<platform::C>::new(CLOUD_URL.into(), Some("project".into()), config, clock));
 
         let mut running_env = {
             let role = {
                 let xml = self.storage.lock().unwrap().project().get().unwrap();
-                let xml = xml.as_deref().unwrap_or(EMPTY_PROJECT);
-                open_project(&xml).unwrap()
+                xml.as_deref().and_then(|xml| open_project(xml).ok()).unwrap_or_else(|| open_project(EMPTY_PROJECT).unwrap())
             };
             get_env(&role, system.clone()).unwrap()
         };

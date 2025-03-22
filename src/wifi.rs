@@ -9,7 +9,7 @@ use esp_idf_hal::modem::WifiModem;
 
 use esp_idf_sys::EspError;
 
-use embedded_svc::wifi::{AuthMethod, Configuration, ClientConfiguration, AccessPointConfiguration};
+use embedded_svc::wifi::{AuthMethod, Configuration, ClientConfiguration, AccessPointConfiguration, ScanMethod, PmfConfiguration};
 
 use crate::storage::StorageController;
 
@@ -38,8 +38,8 @@ impl Wifi {
         };
 
         let ap_config = AccessPointConfiguration {
-            ssid: ap_ssid.as_deref().unwrap_or("nb-esp32").into(),
-            password: ap_pass.as_deref().unwrap_or("netsblox").into(),
+            ssid: ap_ssid.as_deref().and_then(|x| x.try_into().ok()).unwrap_or_else(|| "nb-esp32".try_into().unwrap()),
+            password: ap_pass.as_deref().and_then(|x| x.try_into().ok()).unwrap_or_else(|| "netsblox".try_into().unwrap()),
             channel: 1,
             auth_method: AuthMethod::WPA2Personal,
             ..Default::default()
@@ -49,18 +49,19 @@ impl Wifi {
         self.wifi.set_configuration(&Configuration::Client(Default::default()))?;
         self.wifi.start()?;
 
-        let client_config = match (client_ssid.as_deref(), client_pass.as_deref()) {
-            (Some(ssid), Some(pass)) => {
+        let client_config = match (client_ssid.as_deref().and_then(|x| x.try_into().ok()), client_pass.as_deref().and_then(|x| x.try_into().ok())) {
+            (Some(ssid), Some(password)) => {
                 let aps = self.wifi.scan()?;
                 let ap = aps.iter().find(|ap| ap.ssid.as_str() == ssid);
                 println!("access point: {ap:?}");
 
                 Some(ClientConfiguration {
-                    ssid: ssid.into(),
-                    password: pass.into(),
+                    ssid, password,
                     bssid: ap.map(|ap| ap.bssid),
                     channel: ap.map(|ap| ap.channel),
-                    auth_method: match ap.map(|ap| ap.auth_method).unwrap_or(AuthMethod::WPA2Personal) {
+                    scan_method: ScanMethod::FastScan,
+                    pmf_cfg: PmfConfiguration::NotCapable,
+                    auth_method: match ap.and_then(|ap| ap.auth_method.as_ref()).copied().unwrap_or(AuthMethod::WPA2Personal) {
                         AuthMethod::WPAWPA2Personal => AuthMethod::WPA2Personal, // WPAWPA2Personal is broken for some reason
                         x => x,
                     },

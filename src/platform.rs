@@ -7,18 +7,19 @@ use std::iter;
 
 use netsblox_vm::runtime::{EntityKind, GetType, System, Value, ProcessKind, Config, Request, RequestStatus, SimpleValue, Number};
 use netsblox_vm::gc::gc_arena;
-use netsblox_vm::runtime::{CustomTypes, Key};
+use netsblox_vm::runtime::{CustomTypes, Key, Unwindable};
 use netsblox_vm::template::SyscallMenu;
+use netsblox_vm::compact_str::format_compact;
 
 use esp_idf_sys::EspError;
 
 use esp_idf_hal::units::FromValueType;
-use esp_idf_hal::ledc::{config::TimerConfig, LEDC, Resolution, SpeedMode, LedcTimerDriver, LedcDriver};
+use esp_idf_hal::ledc::{config::TimerConfig, LEDC, Resolution, LedcTimerDriver, LedcDriver};
 use esp_idf_hal::gpio::{Pins, PinDriver, AnyInputPin, AnyOutputPin, AnyIOPin, Input, Output, Level};
 use esp_idf_hal::delay::Ets;
 use esp_idf_hal::i2c::{I2cDriver, I2cError, I2C0};
 
-use embedded_hal::blocking::i2c::{AddressMode as I2cAddressMode, Write as I2cWrite, Read as I2cRead, WriteRead as I2cWriteRead};
+use embedded_hal::i2c::{I2c, AddressMode as I2cAddressMode};
 
 use serde::Deserialize;
 
@@ -46,7 +47,7 @@ struct PeripheralHandles {
 #[derive(Default, Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PeripheralsConfig {
-    #[serde(default)] i2c: Option<I2c>,
+    #[serde(default)] i2c: Option<I2cInfo>,
 
     #[serde(default)] digital_ins: Vec<DigitalIO>,
     #[serde(default)] digital_outs: Vec<DigitalIO>,
@@ -65,7 +66,7 @@ pub struct PeripheralsConfig {
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct I2c {
+struct I2cInfo {
     gpio_sda: PinNumber,
     gpio_scl: PinNumber,
 }
@@ -178,14 +179,13 @@ struct PwmManager {
     channel5: Option<esp_idf_hal::ledc::CHANNEL5>,
     channel6: Option<esp_idf_hal::ledc::CHANNEL6>,
     channel7: Option<esp_idf_hal::ledc::CHANNEL7>,
-    timer: Arc<LedcTimerDriver<'static>>,
+    timer: Arc<LedcTimerDriver<'static, esp_idf_hal::ledc::TIMER0>>,
 }
 impl PwmManager {
     fn new(ledc: LEDC) -> Result<Self, EspError> {
         let timer_config = TimerConfig {
             frequency: 20.kHz().into(),
             resolution: Resolution::Bits10,
-            speed_mode: SpeedMode::LowSpeed,
         };
         let timer = Arc::new(LedcTimerDriver::new(ledc.timer0, &timer_config)?);
 
@@ -242,6 +242,11 @@ impl<C: CustomTypes<S>, S: System<C>> From<ProcessKind<'_, '_, C, S>> for Proces
         ProcessState
     }
 }
+impl Unwindable for ProcessState {
+    type UnwindPoint = (); // a type to represent process (script) state unwind points - we don't have any process state, so just use a unit struct
+    fn get_unwind_point(&self) -> Self::UnwindPoint { }
+    fn unwind_to(&mut self, _: &Self::UnwindPoint) { }
+}
 
 pub struct C;
 impl CustomTypes<EspSystem<Self>> for C {
@@ -268,22 +273,21 @@ impl<T> Clone for SharedI2c<T> {
         Self(self.0.clone())
     }
 }
-impl<T: I2cRead<A>, A: I2cAddressMode> I2cRead<A> for SharedI2c<T> {
+impl<T: embedded_hal::i2c::ErrorType> embedded_hal::i2c::ErrorType for SharedI2c<T> {
     type Error = T::Error;
+}
+impl<T: I2c<A>, A: I2cAddressMode> I2c<A> for SharedI2c<T> {
+    fn transaction(&mut self, address: A, operations: &mut [esp_idf_hal::i2c::Operation<'_>]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().transaction(address, operations)
+    }
     fn read(&mut self, address: A, buffer: &mut [u8]) -> Result<(), Self::Error> {
         self.0.borrow_mut().read(address, buffer)
     }
-}
-impl<T: I2cWrite<A>, A: I2cAddressMode> I2cWrite<A> for SharedI2c<T> {
-    type Error = T::Error;
-    fn write(&mut self, address: A, bytes: &[u8]) -> Result<(), Self::Error> {
-        self.0.borrow_mut().write(address, bytes)
+    fn write(&mut self, address: A, write: &[u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().write(address, write)
     }
-}
-impl<T: I2cWriteRead<A>, A: I2cAddressMode> I2cWriteRead<A> for SharedI2c<T> {
-    type Error = T::Error;
-    fn write_read(&mut self, address: A, bytes: &[u8], buffer: &mut [u8]) -> Result<(), Self::Error> {
-        self.0.borrow_mut().write_read(address, bytes, buffer)
+    fn write_read(&mut self, address: A, write: &[u8], read: &mut [u8]) -> Result<(), Self::Error> {
+        self.0.borrow_mut().write_read(address, write, read)
     }
 }
 
@@ -744,7 +748,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
             let mut device = veml6030::Veml6030::new(i2c, veml6030::SlaveAddr(entry.i2c_addr));
             match device.enable() {
                 Ok(()) => (),
-                Err(veml6030::Error::I2C(e)) => {
+                Err(e) => {
                     errors.push(InitError { context: format!("veml7700s {}", entry.name), error: e.into() });
                     continue
                 }
@@ -780,7 +784,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                 };
 
                 macro_rules! unknown {
-                    ($id:ident) => { key.complete(Err(format!(concat!("unknown {} ", stringify!($id), ": {:?}"), peripheral_type, $id))) }
+                    ($id:ident) => { key.complete(Err(format_compact!(concat!("unknown {} ", stringify!($id), ": {:?}"), peripheral_type, $id))) }
                 }
                 macro_rules! ok {
                     () => { key.complete(Ok("OK".to_owned().into())); }
@@ -809,7 +813,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         match args[index].as_bool() {
                             Ok(x) => x,
                             Err(e) => {
-                                key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected a bool for arg {}, but got {:?}", index + 1, e.got)));
+                                key.complete(Err(format_compact!("{peripheral_type}.{peripheral}.{function} expected a bool for arg {}, but got {:?}", index + 1, e.got)));
                                 return RequestStatus::Handled;
                             }
                         }
@@ -819,7 +823,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         match args[index].as_number() {
                             Ok(x) => x.get(),
                             Err(e) => {
-                                key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected a number for arg {}, but got {:?}", index + 1, e.got)));
+                                key.complete(Err(format_compact!("{peripheral_type}.{peripheral}.{function} expected a number for arg {}, but got {:?}", index + 1, e.got)));
                                 return RequestStatus::Handled;
                             }
                         }
@@ -828,7 +832,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                         let raw = parse_args_inner!(($index) f64);
                         let cvt = raw as u8;
                         if cvt as f64 != raw {
-                            key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected an integer in [0, 255] for arg {}, but got {raw}", $index + 1)));
+                            key.complete(Err(format_compact!("{peripheral_type}.{peripheral}.{function} expected an integer in [0, 255] for arg {}, but got {raw}", $index + 1)));
                             return RequestStatus::Handled;
                         }
                         cvt
@@ -839,7 +843,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                     ($($t:tt)*) => {{
                         let expected = count_expected!($($t)*);
                         if args.len() != expected {
-                            key.complete(Err(format!("{peripheral_type}.{peripheral}.{function} expected {expected} args, but got {}", args.len())));
+                            key.complete(Err(format_compact!("{peripheral_type}.{peripheral}.{function} expected {expected} args, but got {}", args.len())));
                             return RequestStatus::Handled;
                         }
                         parse_args_inner!((0usize) $($t)*)
@@ -907,7 +911,7 @@ pub fn bind_syscalls(peripherals: SyscallPeripherals, peripherals_config: &Perip
                             "setPixel" => {
                                 let (x, (y, (r, (g, b)))) = parse_args!(u8 u8 u8 u8 u8);
                                 if x >= 13 || y >= 9 {
-                                    key.complete(Err(format!("pixel position ({x}, {y}) is out of bounds")));
+                                    key.complete(Err(format_compact!("pixel position ({x}, {y}) is out of bounds")));
                                     return RequestStatus::Handled;
                                 }
                                 handle.pixel_rgb(x, y, r, g, b).unwrap();

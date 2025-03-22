@@ -21,7 +21,7 @@ runner = "espflash --monitor"
 [target.xtensa-esp32s3-espidf]
 linker = "ldproxy"
 runner = "espflash flash --flash-size 8mb --partition-table partitions.csv --monitor"
-#rustflags = ["--cfg", "espidf_time64"] # Extending time_t for ESP IDF 5: https://github.com/esp-rs/rust/issues/110
+rustflags = ["--cfg", "espidf_time64"] # Extending time_t for ESP IDF 5: https://github.com/esp-rs/rust/issues/110
 
 [target.riscv32imc-esp-espidf]
 linker = "ldproxy"
@@ -39,6 +39,6 @@ build-std = ["std", "panic_abort"]
 # Note: these variables are not used when using pio builder (`cargo build --features pio`)
 # v5.0 and later require uncommenting the espidf_time64 cfg flag above (see [build] options).
 # earlier versions should comment said espidf_time64 cfg setting.
-ESP_IDF_VERSION = "release/v4.4"
-# ESP_IDF_VERSION = "release/v5.0"
+# ESP_IDF_VERSION = "release/v4.4"
+ESP_IDF_VERSION = "release/v5.1"
 # ESP_IDF_VERSION = "master"
