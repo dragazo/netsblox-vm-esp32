@@ -1,9 +1,9 @@
-## Peripherals
+# Peripherals
 
 Peripherals can be added to a device by modifying the JSON-encoded peripherals config file through the remote board configuration page.
 
 
-### I2C
+## I2C
 
 I2C is simple communication protocol between integrated circuits.
 This is a common way to connect external peripherals to embedded devices, and many of NetsBloxVM's supported peripherals require I2C.
@@ -17,7 +17,7 @@ This is a common way to connect external peripherals to embedded devices, and ma
 }
 ```
 
-### Digital Inputs
+## Digital Inputs
 
 Digital inputs are simple inputs that measure high or low levels of voltage.
 These could be used to check whether a push button is pressed.
@@ -37,7 +37,7 @@ The `negated` option allows you to flip this and have low voltage map to `true` 
 }
 ```
 
-### Digital Outputs
+## Digital Outputs
 
 Digital outputs are simple outputs that can be set to either high or low voltage.
 These could be used to control simple on/off LEDs.
@@ -57,7 +57,7 @@ The `negated` option allows you to flip this and have `true` map to high voltage
 }
 ```
 
-### Motors
+## Motors
 
 The basic motor type is a DC motor which has two gpio pins: one for powering the motor in the positive (forward) direction, and another for the negative (reverse) direction.
 
@@ -95,7 +95,7 @@ You can use motor groups to accomplish this, which group multiple named motors i
 }
 ```
 
-### HC-SR04
+## HC-SR04
 
 The HC-SR04 is a simple ultrasonic distance sensor.
 It is controlled by two gpio pins: one to trigger an ultrasonic pulse and another to measure the echo response.
@@ -112,7 +112,7 @@ It is controlled by two gpio pins: one to trigger an ultrasonic pulse and anothe
 }
 ```
 
-### MAX30205
+## MAX30205
 
 The MAX30205 is a human body temperature sensor, which could be made into a wearable device.
 This sensor communicates over I2C, so make sure you configured I2C for the NetsBloxVM board.
@@ -128,7 +128,7 @@ This sensor communicates over I2C, so make sure you configured I2C for the NetsB
 }
 ```
 
-### IS31FL3741
+## IS31FL3741
 
 The IS31FL3741 is a 13x9 RGB LED matrix made by Adafruit.
 With this, you can display color images such as NetsBlox costumes/images, or manually manipulate individual pixel colors.
@@ -145,7 +145,7 @@ This sensor communicates over I2C, so make sure you configured I2C for the NetsB
 }
 ```
 
-### BMP388
+## BMP388
 
 The BMP388 is a high-precision environmental sensor that measures pressure and temperature.
 With this, you can display color images such as NetsBlox costumes/images, or manually manipulate individual pixel colors.
@@ -162,7 +162,7 @@ This sensor communicates over I2C, so make sure you configured I2C for the NetsB
 }
 ```
 
-### LIS3DH
+## LIS3DH
 
 The LIS3DH is a 3-axis accelerometer.
 With this, you can measure how quickly something accelerates (like a falling object).
@@ -180,7 +180,7 @@ This sensor communicates over I2C, so make sure you configured I2C for the NetsB
 }
 ```
 
-### VEML7700
+## VEML7700
 
 The VEML7700 is a high-precision light level sensor.
 With this, you can tell if the lights are on in a room, or tell daytime vs. nighttime.
