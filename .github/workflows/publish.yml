@@ -10,9 +10,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
       - uses: esp-rs/xtensa-toolchain@v1.5
-      - uses: actions/setup-python@v4
+      - uses: actions/setup-python@v5
       - run: sudo apt install -y libudev-dev
       - run: cargo install espflash
       - run: openssl req -newkey rsa:2048 -nodes -keyout privkey.pem -x509 -days 3650 -out cacert.pem -subj "/CN=NetsBlox VM ESP32"
@@ -25,7 +25,7 @@ jobs:
       - run: ls part-* | wc -l >parts
       - run: mkdir pubs/esp32s3 && mv whole pubs/esp32s3/. && mv parts pubs/esp32s3/. && mv part-* pubs/esp32s3/.
 
-      - uses: actions/upload-pages-artifact@v1
+      - uses: actions/upload-pages-artifact@v3
         with:
           path: pubs
-      - uses: actions/deploy-pages@v2
+      - uses: actions/deploy-pages@v4
