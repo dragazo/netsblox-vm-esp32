@@ -19,11 +19,11 @@ jobs:
       - run: mkdir pubs
 
       - run: cargo +esp build --release --target xtensa-esp32s3-espidf
-      - run: espflash save-image --chip esp32s3 --flash-size 8mb --partition-table partitions.csv --merge target/xtensa-esp32s3-espidf/release/netsblox-vm-esp32 whole
-      - run: python extract-ota.py whole partitions.csv whole
-      - run: split -b 256k -da 4 whole part-
-      - run: ls part-* | wc -l >parts
-      - run: mkdir pubs/esp32s3 && mv whole pubs/esp32s3/. && mv parts pubs/esp32s3/. && mv part-* pubs/esp32s3/.
+      - run: espflash save-image --chip esp32s3 --flash-size 8mb --partition-table partitions.csv --merge target/xtensa-esp32s3-espidf/release/netsblox-vm-esp32 img
+      - run: python extract-ota.py img partitions.csv ota
+      - run: split -b 256k -da 4 ota ota-part-
+      - run: ls ota-part-* | wc -l >ota-parts
+      - run: mkdir pubs/esp32s3 && mv img pubs/esp32s3/. && mv ota pubs/esp32s3/. && mv ota-parts pubs/esp32s3/. && mv ota-part-* pubs/esp32s3/.
 
       - uses: actions/upload-pages-artifact@v3
         with:
